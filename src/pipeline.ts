@@ -1,6 +1,7 @@
 // One question, end to end: plan, gather, research brief, forecasters, aggregation,
 // disagreement check, comment. Submission is the caller's job.
 
+import { asOfMs } from './asof.ts';
 import { config } from './config.ts';
 import { call, lastJson, type ToolSpec } from './llm.ts';
 import { log } from './log.ts';
@@ -50,8 +51,12 @@ export class Budget {
   left() { return this.cap - this.spent; }
 }
 
+// Tools that cannot answer as of a past date are left out of backtests.
+const LIVE_ONLY_TOOLS = new Set(['web_search']);
+
 function researchTools(): ToolSpec[] {
-  return [...SOURCES.flatMap((s) => s.tools()), wikiTool()];
+  const tools = [...SOURCES.flatMap((s) => s.tools()), wikiTool()];
+  return asOfMs() == null ? tools : tools.filter((t) => !LIVE_ONLY_TOOLS.has(t.name));
 }
 
 async function makePlan(q: Question, b: Budget): Promise<ResearchPlan> {

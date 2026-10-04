@@ -4,7 +4,9 @@
 import type { Question } from '../metaculus.ts';
 import type { ToolSpec } from '../llm.ts';
 import { log } from '../log.ts';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { asOfMs, liveOnly, nowMs } from '../asof.ts';
+import { config } from '../config.ts';
 import { fetchPage, get, getJson, htmlToText } from './http.ts';
 
 export interface Evidence {
@@ -407,19 +409,36 @@ function portalTitle(d: Date): string {
   return `Portal:Current_events/${d.getUTCFullYear()}_${m}_${d.getUTCDate()}`;
 }
 
+function diskCachePath(date: string): string {
+  return `${config.dataDir}/cache/current-events/${date}.json`;
+}
+
 export async function currentEventsDay(d: Date): Promise<string[]> {
   const title = portalTitle(d);
+  const date = d.toISOString().slice(0, 10);
   const hit = dayCache.get(title);
-  const isToday = d.toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10);
-  // Past days are final; today's page is refreshed every 2 hours.
-  if (hit && (!isToday || Date.now() - hit.at < 2 * 3600_000)) return hit.lines;
-  const r = await get(`https://en.wikipedia.org/api/rest_v1/page/html/${encodeURIComponent(title)}`, { timeoutMs: 20_000 });
+  // A day is final once it is two days old; those are kept on disk and never fetched again.
+  const final = Date.now() - Date.parse(`${date}T00:00:00Z`) > 2 * 86_400_000;
+  if (hit && (final || Date.now() - hit.at < 2 * 3600_000)) return hit.lines;
+  if (final && existsSync(diskCachePath(date))) {
+    const lines = JSON.parse(readFileSync(diskCachePath(date), 'utf8')) as string[];
+    dayCache.set(title, { at: Date.now(), lines });
+    return lines;
+  }
+  let r = await get(`https://en.wikipedia.org/api/rest_v1/page/html/${encodeURIComponent(title)}`, { timeoutMs: 20_000 });
+  for (let attempt = 0; r.status === 429 && attempt < 3; attempt++) {
+    await new Promise((res) => setTimeout(res, 5_000 * 2 ** attempt));
+    r = await get(`https://en.wikipedia.org/api/rest_v1/page/html/${encodeURIComponent(title)}`, { timeoutMs: 20_000 });
+  }
   if (r.status === 404) { dayCache.set(title, { at: Date.now(), lines: [] }); return []; }
   if (r.status >= 400) throw new Error(`current events ${r.status}`);
   const { text } = htmlToText(r.text);
-  const date = d.toISOString().slice(0, 10);
   const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length > 40).map((l) => `${date}: ${l}`);
   dayCache.set(title, { at: Date.now(), lines });
+  if (final) {
+    mkdirSync(`${config.dataDir}/cache/current-events`, { recursive: true });
+    writeFileSync(diskCachePath(date), JSON.stringify(lines));
+  }
   return lines;
 }
 

@@ -38,7 +38,12 @@ export async function get(url: string, opts: { timeoutMs?: number; headers?: Rec
 }
 
 export async function getJson(url: string, opts: Parameters<typeof get>[1] = {}): Promise<any> {
-  const r = await get(url, { ...opts, headers: { accept: 'application/json', ...(opts.headers ?? {}) } });
+  let r = await get(url, { ...opts, headers: { accept: 'application/json', ...(opts.headers ?? {}) } });
+  // Back off on 429 a few times before giving up (Wikimedia and Polymarket throttle bursts).
+  for (let attempt = 0; r.status === 429 && attempt < 3; attempt++) {
+    await new Promise((res) => setTimeout(res, 4_000 * 2 ** attempt));
+    r = await get(url, { ...opts, headers: { accept: 'application/json', ...(opts.headers ?? {}) } });
+  }
   if (r.status >= 400) throw new Error(`${r.status} ${url}: ${r.text.slice(0, 200)}`);
   return JSON.parse(r.text);
 }
