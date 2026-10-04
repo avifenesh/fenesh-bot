@@ -1,5 +1,5 @@
 // Model calls through Amazon Bedrock with a bearer key.
-// Claude and Grok go through the Converse API; OpenAI models go through the Mantle endpoint
+// Claude goes through the Converse API; OpenAI models go through the Mantle endpoint
 // (/openai/v1/responses for the GPT-6 family, /v1/responses for open-weight models).
 
 import { config, model, type ModelSpec } from './config.ts';
@@ -82,11 +82,10 @@ async function runTool(o: CallOptions, name: string, args: any): Promise<string>
   }
 }
 
-// ---- Converse (Claude, Grok) ----
+// ---- Converse (Claude) ----
 
 function converseExtra(spec: ModelSpec, effort: string): Record<string, unknown> {
   if (spec.id.includes('anthropic')) return { thinking: { type: 'adaptive' }, output_config: { effort } };
-  if (spec.id.includes('xai')) return { reasoning_config: effort };
   return {};
 }
 
@@ -167,48 +166,10 @@ async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): P
   }
 }
 
-// ---- Bedrock runtime chat completions (Grok; the only path that takes service_tier) ----
-
-async function callChat(spec: ModelSpec, prompt: string, o: CallOptions): Promise<CallResult> {
-  const url = `https://bedrock-runtime.${config.bedrockRegion}.amazonaws.com/openai/v1/chat/completions`;
-  const tools = o.tools?.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
-  const messages: any[] = [];
-  if (o.system) messages.push({ role: 'system', content: o.system });
-  messages.push({ role: 'user', content: prompt });
-  let input = 0, output = 0, toolCalls = 0;
-  for (let round = 0; ; round++) {
-    const body: any = {
-      model: spec.id,
-      messages,
-      reasoning_effort: o.effort ?? spec.effort,
-      max_completion_tokens: o.maxTokens ?? spec.maxTokens,
-    };
-    if (spec.serviceTier) body.service_tier = spec.serviceTier;
-    if (tools?.length) body.tools = tools;
-    const d = await post(url, body, o.timeoutMs ?? 15 * 60_000);
-    input += d.usage?.prompt_tokens ?? 0;
-    output += d.usage?.completion_tokens ?? 0;
-    const msg = d.choices?.[0]?.message ?? {};
-    const calls: any[] = msg.tool_calls ?? [];
-    if (calls.length && round < (o.maxToolRounds ?? 12)) {
-      messages.push(msg);
-      for (const c of calls) {
-        toolCalls++;
-        const out = await runTool(o, c.function?.name, safeParse(c.function?.arguments));
-        messages.push({ role: 'tool', tool_call_id: c.id, content: out.slice(0, 60_000) });
-      }
-      continue;
-    }
-    return { text: msg.content ?? '', usage: { input, output, costUsd: cost(spec, input, output) }, model: spec.key, toolCalls };
-  }
-}
-
 export async function call(modelKey: string, prompt: string, o: CallOptions = {}): Promise<CallResult> {
   const spec = model(modelKey);
   const t0 = Date.now();
-  const r = spec.transport === 'converse' ? await callConverse(spec, prompt, o)
-    : spec.transport === 'runtime-chat' ? await callChat(spec, prompt, o)
-    : await callResponses(spec, prompt, o);
+  const r = spec.transport === 'converse' ? await callConverse(spec, prompt, o) : await callResponses(spec, prompt, o);
   log.info('llm', { model: spec.key, label: o.label, ms: Date.now() - t0, in: r.usage.input, out: r.usage.output, usd: +r.usage.costUsd.toFixed(4), tools: r.toolCalls });
   for (const fn of UsageSink) fn(spec.key, o.label ?? '', r.usage);
   return r;

@@ -18,7 +18,7 @@ const POLL = 'fenesh-poll';
 const QUESTION = 'fenesh-question';
 const EVALUATE = 'fenesh-evaluate';
 
-const leanForecasters = (process.env.FENESH_LEAN_FORECASTERS ?? 'gpt-6-sol,opus-5.5,grok-4.7').split(',');
+const leanForecasters = (process.env.FENESH_LEAN_FORECASTERS ?? 'gpt-6.1-sol,opus-5.5,gpt-oss-120b').split(',');
 const dailyBudget = Number(process.env.FENESH_DAILY_BUDGET_USD ?? 60);
 const safetyLeadMs = 25 * 60_000;
 

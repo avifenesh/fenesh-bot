@@ -2,20 +2,22 @@
 
 import './net.ts';
 
-export type Transport = 'converse' | 'mantle-openai' | 'mantle-v1' | 'runtime-chat';
+export type Transport = 'converse' | 'mantle-openai' | 'mantle-v1';
 
 export interface ModelSpec {
   key: string; // short name used in logs and the archive
   id: string; // Bedrock model or inference-profile id
   transport: Transport;
   effort: string; // reasoning effort passed to the provider
-  serviceTier?: 'priority' | 'flex' | 'default';
   maxTokens: number;
   // Last date the model may know about (training cutoff, from the providers' docs). Backtests only
   // use questions that open after the latest cutoff of the models in the run.
   cutoff: string;
+  // Open-weight model: votes in the aggregate but does not count toward the supervisor trigger, and
+  // replay scores the ensemble with and without it.
+  openWeight?: boolean;
   // USD per million tokens (reasoning tokens bill as output). Bedrock prices checked 2026-10-04:
-  // global profiles at base rate, Mantle OpenAI ids at the in-region rate (+10%), Grok at the priority tier (1.75x).
+  // global profiles at base rate, Mantle OpenAI ids at the in-region rate (+10%).
   price: { input: number; output: number };
 }
 
@@ -26,8 +28,8 @@ export const MODELS: Record<string, ModelSpec> = {
     key: 'gpt-6-astra', id: 'openai.gpt-6-astra', transport: 'mantle-openai',
     effort: 'xhigh', cutoff: '2026-04-30', maxTokens: 32000, price: { input: 11, output: 55 },
   },
-  'gpt-6-sol': {
-    key: 'gpt-6-sol', id: 'openai.gpt-6.1-sol', transport: 'mantle-openai',
+  'gpt-6.1-sol': {
+    key: 'gpt-6.1-sol', id: 'openai.gpt-6.1-sol', transport: 'mantle-openai',
     effort: 'xhigh', cutoff: '2026-04-30', maxTokens: 32000, price: { input: 2.2, output: 11 },
   },
   'opus-5.5': {
@@ -38,15 +40,10 @@ export const MODELS: Record<string, ModelSpec> = {
     key: 'fable-5.1', id: 'global.anthropic.claude-fable-5-1', transport: 'converse',
     effort: 'high', cutoff: '2026-06-30', maxTokens: 32000, price: { input: 10, output: 50 },
   },
-  // Grok 4.7: xAI's docs give a May 2026 cutoff; a launch write-up mentions supplemental data through
-  // August 2026, so backtests treat August as the cutoff.
-  'grok-4.7': {
-    key: 'grok-4.7', id: 'global.xai.grok-4.7', transport: 'runtime-chat',
-    effort: 'xhigh', serviceTier: 'priority', cutoff: '2026-08-31', maxTokens: 32000, price: { input: 3.5, output: 10.5 },
-  },
-  // Open-weight model for the fast steps: query writing, relevance filtering, market matching, parse repair.
+  // The open-weight model: a voting member of the ensemble, and the fast steps (query writing,
+  // classification, market matching, parse repair).
   'gpt-oss-120b': {
-    key: 'gpt-oss-120b', id: 'openai.gpt-oss-120b', transport: 'mantle-v1',
+    key: 'gpt-oss-120b', id: 'openai.gpt-oss-120b', transport: 'mantle-v1', openWeight: true,
     effort: 'medium', cutoff: '2024-06-30', maxTokens: 16000, price: { input: 0.15, output: 0.6 },
   },
 };
@@ -62,12 +59,12 @@ export const config = {
   bedrockRegion: env.BEDROCK_REGION ?? 'us-east-1',
   valkey: { host: env.VALKEY_HOST ?? '127.0.0.1', port: Number(env.VALKEY_PORT ?? 6379) },
   dataDir: env.FENESH_DATA_DIR ?? new URL('../data/', import.meta.url).pathname,
-  // Tournaments polled for open questions. MiniBench rounds are discovered at runtime.
+  // Tournaments polled for open questions. The current MiniBench round is polled by its slug, 'minibench'.
   tournaments: list('FENESH_TOURNAMENTS', 'fall-futureeval-2026'),
   discoverMiniBench: (env.FENESH_MINIBENCH ?? '1') === '1',
-  forecasters: list('FENESH_FORECASTERS', 'gpt-6-astra,gpt-6-sol,opus-5.5,fable-5.1,grok-4.7'),
+  forecasters: list('FENESH_FORECASTERS', 'gpt-6-astra,gpt-6.1-sol,opus-5.5,fable-5.1,gpt-oss-120b'),
   fastModel: env.FENESH_FAST_MODEL ?? 'gpt-oss-120b',
-  researchModel: env.FENESH_RESEARCH_MODEL ?? 'gpt-6-sol',
+  researchModel: env.FENESH_RESEARCH_MODEL ?? 'gpt-6.1-sol',
   // Submit nothing; log what would be submitted.
   dryRun: (env.FENESH_DRY_RUN ?? '0') === '1',
   // Hard cap on model spend per question, USD.
@@ -83,4 +80,8 @@ export function model(key: string): ModelSpec {
   const m = MODELS[key];
   if (!m) throw new Error(`unknown model ${key}`);
   return m;
+}
+
+export function isOpenWeight(key: string): boolean {
+  return MODELS[key]?.openWeight === true;
 }

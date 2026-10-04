@@ -42,15 +42,15 @@ describe('backtest', () => {
     expect(items.map((i) => i.question.questionId).sort()).toEqual([1001, 1002, 1003, 1601, 1602]);
     expect(items.find((i) => i.question.questionId === 1602)!.resolution).toBe('yes');
     expect(items.find((i) => i.question.questionId === 1002)!.asOf).toBe('2026-07-20T00:20:00.000Z');
-    const claude = selectItems(items, { models: ['opus-5.5', 'gpt-6-sol'], n: 10 });
+    const claude = selectItems(items, { models: ['opus-5.5', 'gpt-6.1-sol'], n: 10 });
     expect(claude.map((i) => i.question.questionId).sort()).toEqual([1002, 1003, 1601, 1602]);
     // GPT-only forecasters still bring in the Opus supervisor and the June priors boundary.
-    const gpt = selectItems(items, { models: ['gpt-6-sol'], n: 10 });
+    const gpt = selectItems(items, { models: ['gpt-6.1-sol'], n: 10 });
     expect(gpt.map((i) => i.question.questionId).sort()).toEqual([1002, 1003, 1601, 1602]);
     const { participatingModels } = await import('../src/backtest.ts');
-    expect(participatingModels({ models: ['gpt-6-sol'], supervisor: false })).not.toContain('opus-5.5');
-    expect(participatingModels({ models: ['gpt-6-sol'] })).toContain('opus-5.5');
-    const withGrok = selectItems(items, { models: ['opus-5.5', 'grok-4.7'], n: 10 });
-    expect(withGrok).toEqual([]);
+    expect(participatingModels({ models: ['gpt-6.1-sol'], supervisor: false })).not.toContain('opus-5.5');
+    expect(participatingModels({ models: ['gpt-6.1-sol'] })).toContain('opus-5.5');
+    const noneAfterCutoff = selectItems(items.filter((i) => i.question.openTime < '2026-07-01'), { models: ['opus-5.5'], n: 10 });
+    expect(noneAfterCutoff).toEqual([]);
   });
 });
