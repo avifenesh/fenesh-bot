@@ -413,7 +413,31 @@ function diskCachePath(date: string): string {
   return `${config.dataDir}/cache/current-events/${date}.json`;
 }
 
+// In a backtest, a day page is read at the revision that was live at the as-of moment, because
+// pages keep getting edits after their day ends. Cached in memory by (title, revision) only.
+const asOfDayCache = new Map<string, string[]>();
+
+async function currentEventsDayAsOf(d: Date, asOf: number): Promise<string[]> {
+  const title = portalTitle(d);
+  const u = new URL('https://en.wikipedia.org/w/api.php');
+  u.search = new URLSearchParams({ action: 'query', prop: 'revisions', titles: title, rvlimit: '1', rvdir: 'older', rvstart: new Date(asOf).toISOString(), rvprop: 'ids', format: 'json', formatversion: '2' }).toString();
+  const rev = (await getJson(u.toString())).query?.pages?.[0]?.revisions?.[0]?.revid;
+  if (!rev) return [];
+  const key = `${title}@${rev}`;
+  const hit = asOfDayCache.get(key);
+  if (hit) return hit;
+  const v = new URL('https://en.wikipedia.org/w/api.php');
+  v.search = new URLSearchParams({ action: 'parse', oldid: String(rev), prop: 'text', format: 'json', formatversion: '2' }).toString();
+  const html = (await getJson(v.toString())).parse?.text ?? '';
+  const date = d.toISOString().slice(0, 10);
+  const lines = htmlToText(html).text.split('\n').map((l) => l.trim()).filter((l) => l.length > 40).map((l) => `${date}: ${l}`);
+  asOfDayCache.set(key, lines);
+  return lines;
+}
+
 export async function currentEventsDay(d: Date): Promise<string[]> {
+  const asOf = asOfMs();
+  if (asOf != null) return currentEventsDayAsOf(d, asOf);
   const title = portalTitle(d);
   const date = d.toISOString().slice(0, 10);
   const hit = dayCache.get(title);
