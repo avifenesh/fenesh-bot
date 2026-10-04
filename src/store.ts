@@ -13,6 +13,7 @@ function open(): DatabaseSync {
   if (db) return db;
   mkdirSync(config.dataDir, { recursive: true });
   db = new DatabaseSync(`${config.dataDir}/fenesh.db`);
+  db.exec('PRAGMA busy_timeout = 15000');
   db.exec(`
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS runs (
@@ -37,7 +38,7 @@ function open(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS runs_q ON runs(question_id);
     CREATE TABLE IF NOT EXISTS components (
       run_id INTEGER NOT NULL,
-      round INTEGER NOT NULL,        -- 1 = first pass, 2 = after the supervisor addendum
+      round INTEGER NOT NULL,        -- 0 = logged priors, 1 = first pass, 2 = after the supervisor addendum, 9 = shadow
       model TEXT NOT NULL,
       ok INTEGER NOT NULL,
       forecast TEXT,                 -- pYes / probs / pcts
@@ -73,8 +74,12 @@ export function finishRun(id: number, status: string, r?: RunResult, error?: str
   const put = (round: number, fs: RunResult['forecasts']) => {
     for (const f of fs) ins.run(id, round, f.model, f.ok ? 1 : 0, JSON.stringify({ pYes: f.pYes, probs: f.probs, pcts: f.pcts }), f.summary ?? null, f.costUsd, f.error ?? null);
   };
+  // Round 0: components that are logged for evaluation but may not be in the aggregate.
+  if (r.market) ins.run(id, 0, 'market', 1, JSON.stringify({ pYes: r.market.quote.probability }), `${r.market.quote.venue}: ${r.market.quote.question} (confidence ${r.market.confidence}, weight ${r.marketWeight})`, 0, null);
+  if (r.gut) ins.run(id, 0, 'system1-gut', 1, JSON.stringify(r.gut), null, 0, null);
   put(1, r.round1);
   if (r.addendum) put(2, r.forecasts);
+  if (r.shadow?.length) put(9, r.shadow); // shadow models: scored, never submitted
 }
 
 // True if this question already got a submitted forecast from us.

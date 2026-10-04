@@ -303,7 +303,7 @@ function portalTitle(d: Date): string {
   return `Portal:Current_events/${d.getUTCFullYear()}_${m}_${d.getUTCDate()}`;
 }
 
-async function currentEventsDay(d: Date): Promise<string[]> {
+export async function currentEventsDay(d: Date): Promise<string[]> {
   const title = portalTitle(d);
   const hit = dayCache.get(title);
   const isToday = d.toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10);

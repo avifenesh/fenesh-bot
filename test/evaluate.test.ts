@@ -37,5 +37,12 @@ describe('evaluation', () => {
     expect(by['a r1'].meanLog).toBeCloseTo((Math.log(0.9) + Math.log(0.9) + Math.log(0.8)) / 3, 6);
     expect(by.submitted.meanLog).toBeCloseTo((Math.log(0.8) + Math.log(0.7) + Math.log(0.7)) / 3, 6);
     expect(by['a r1'].meanLog).toBeGreaterThan(by['b r1'].meanLog);
+
+    const { replay } = await import('../src/evaluate.ts');
+    const v = Object.fromEntries(replay().map((x) => [x.component, x]));
+    expect(v['median clip.02 (live)'].n).toBe(2);
+    // median of {0.9, 0.6} = 0.75 on a Yes, median of {0.1, 0.5} = 0.3 on a No
+    expect(v['median clip.02 (live)'].meanLog).toBeCloseTo((Math.log(0.75) + Math.log(0.7)) / 2, 6);
+    expect(v['mc mean (live)'].n).toBe(1);
   });
 });

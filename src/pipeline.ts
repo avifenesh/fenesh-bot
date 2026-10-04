@@ -8,6 +8,8 @@ import type { ForecastPayload, Question } from './metaculus.ts';
 import { checkCdf, medianCdf, quantilesOf, rawCdf, standardize, widen, type Pct } from './numeric.ts';
 import { forecastPrompt, planPrompt, researchPrompt, supervisorPrompt } from './prompts.ts';
 import { SOURCES, type Evidence, type ResearchPlan } from './research/sources.ts';
+import { classify, gut, matchMarket, type MarketMatch } from './system1.ts';
+import { wikiTool } from './wiki.ts';
 
 export interface ForecasterOutput {
   model: string;
@@ -30,6 +32,11 @@ export interface RunResult {
   forecasts: ForecasterOutput[];
   payload: ForecastPayload;
   headline: string; // human summary of the final forecast
+  market: MarketMatch | null; // exact-match market, if one was found
+  marketWeight: number; // weight the market got in the binary aggregate
+  gut?: { pYes?: number; probs?: Record<string, number> }; // fast forecast with no research, logged only
+  baseRate?: string;
+  shadow: ForecasterOutput[]; // extra models on the same brief, archived and scored, never submitted
   comment: string;
   costUsd: number;
   disagreement: number;
@@ -44,7 +51,7 @@ class Budget {
 }
 
 function researchTools(): ToolSpec[] {
-  return SOURCES.flatMap((s) => s.tools());
+  return [...SOURCES.flatMap((s) => s.tools()), wikiTool()];
 }
 
 async function makePlan(q: Question, b: Budget): Promise<ResearchPlan> {
@@ -194,12 +201,25 @@ function disagreement(q: Question, fs: ForecasterOutput[]): number {
   return (Math.max(...meds) - Math.min(...meds)) * 3;
 }
 
-export function aggregate(q: Question, fs: ForecasterOutput[]): { payload: ForecastPayload; headline: string } {
+// Weight for an exact-match market in the binary aggregate (log-odds blend). Liquid real-money
+// markets get more; play-money markets less. Zero when the match is not confident.
+export function marketWeight(m: MarketMatch | null): number {
+  if (!m || m.confidence < 0.7) return 0;
+  const w = Number(process.env.FENESH_MARKET_WEIGHT ?? 0.5);
+  if (m.quote.venue === 'polymarket') return (m.quote.volumeUsd ?? 0) >= 10_000 ? w : 0;
+  return (m.quote.volumeUsd ?? 0) >= 2_000 ? w / 2 : 0;
+}
+
+export function aggregate(q: Question, fs: ForecasterOutput[], market: MarketMatch | null = null): { payload: ForecastPayload; headline: string; marketWeight: number } {
   const ok = fs.filter((f) => f.ok);
   if (!ok.length) throw new Error('no forecaster produced a usable forecast');
   if (q.type === 'binary') {
-    const p = clamp(median(ok.map((f) => f.pYes!)), config.binaryClip);
-    return { payload: { probability_yes: Math.round(p * 1000) / 1000 }, headline: `${(p * 100).toFixed(1)}% Yes` };
+    const models = clamp(median(ok.map((f) => f.pYes!)), 0.001);
+    const w = marketWeight(market);
+    const blended = w ? 1 / (1 + Math.exp(-((1 - w) * logit(models) + w * logit(clamp(market!.quote.probability, 0.001))))) : models;
+    const p = clamp(blended, config.binaryClip);
+    const head = `${(p * 100).toFixed(1)}% Yes${w ? ` (models ${(models * 100).toFixed(1)}%, market ${(market!.quote.probability * 100).toFixed(1)}% at weight ${w})` : ''}`;
+    return { payload: { probability_yes: Math.round(p * 1000) / 1000 }, headline: head, marketWeight: w };
   }
   if (q.type === 'multiple_choice') {
     const mean: Record<string, number> = {};
@@ -210,7 +230,7 @@ export function aggregate(q: Question, fs: ForecasterOutput[]): { payload: Forec
     const last = q.options[q.options.length - 1];
     mean[last] = Math.round((1 - q.options.slice(0, -1).reduce((a, o) => a + mean[o], 0)) * 1e6) / 1e6;
     const head = q.options.map((o) => `${o} ${(mean[o] * 100).toFixed(0)}%`).join(', ');
-    return { payload: { probability_yes_per_category: mean }, headline: head };
+    return { payload: { probability_yes_per_category: mean }, headline: head, marketWeight: 0 };
   }
   const s = q.scaling!;
   const cdfs = ok.map((f) => rawCdf(s, f.pcts!));
@@ -218,7 +238,7 @@ export function aggregate(q: Question, fs: ForecasterOutput[]): { payload: Forec
   checkCdf(s, cdf);
   const qs = quantilesOf(s, cdf);
   const show = (v: number) => (q.type === 'date' ? new Date(v * 1000).toISOString().slice(0, 10) : v.toPrecision(4));
-  return { payload: { continuous_cdf: cdf }, headline: `median ${show(qs.p50)} (80% interval ${show(qs.p10)} to ${show(qs.p90)})${q.unit ? ` ${q.unit}` : ''}` };
+  return { payload: { continuous_cdf: cdf }, headline: `median ${show(qs.p50)} (80% interval ${show(qs.p10)} to ${show(qs.p90)})${q.unit ? ` ${q.unit}` : ''}`, marketWeight: 0 };
 }
 
 function describe(q: Question, f: ForecasterOutput): string {
@@ -236,6 +256,7 @@ function buildComment(q: Question, r: Omit<RunResult, 'comment'>): string {
     '',
     `Aggregation: ${q.type === 'binary' ? 'median of model probabilities, kept within 2-98%' : q.type === 'multiple_choice' ? 'mean of model probabilities per option' : 'pointwise median of model CDFs, widened 15% around the median'}.`,
     '',
+    ...(r.market ? [`Matching market: ${r.market.quote.question} on ${r.market.quote.venue} at ${(r.market.quote.probability * 100).toFixed(1)}% (${r.market.quote.url}), weight ${r.marketWeight}.`, ''] : []),
     'Model forecasts:',
     ...r.forecasts.map((f) => `- ${describe(q, f)}${f.summary ? `. ${f.summary}` : ''}`),
   ];
@@ -247,12 +268,23 @@ function buildComment(q: Question, r: Omit<RunResult, 'comment'>): string {
 export async function runQuestion(q: Question, opts: { forecasters?: string[]; supervisor?: boolean } = {}): Promise<RunResult> {
   const b = new Budget(config.maxCostPerQuestion);
   const plan = await makePlan(q, b);
-  const evidence = await gather(q, plan);
-  log.info('gathered', { q: q.questionId, items: evidence.length, bySource: Object.fromEntries(SOURCES.map((s) => [s.name, evidence.filter((e) => e.source === s.name).length])) });
-  const brief = await writeBrief(q, evidence, b);
+  const [evidence, cls, market] = await Promise.all([gather(q, plan), classify(q), matchMarket(q, plan.marketQueries)]);
+  log.info('gathered', { q: q.questionId, items: evidence.length, market: market ? `${market.quote.venue} ${market.quote.probability} c=${market.confidence}` : null, bySource: Object.fromEntries(SOURCES.map((s) => [s.name, evidence.filter((e) => e.source === s.name).length])) });
+  const [brief, g] = await Promise.all([writeBrief(q, evidence, b), gut(q, cls.baseRateText)]);
+  b.add(g.costUsd);
+
+  const priors = [
+    cls.baseRateText,
+    market ? `A prediction market appears to ask this same question: "${market.quote.question}" on ${market.quote.venue}, currently ${(market.quote.probability * 100).toFixed(1)}% Yes${market.quote.volumeUsd ? `, volume about ${Math.round(market.quote.volumeUsd)} ${market.quote.venue === 'polymarket' ? 'USD' : 'mana'}` : ''} (${market.quote.url}). Check that it truly matches before leaning on it.` : '',
+  ].filter(Boolean).join('\n');
+  const priorsBlock = priors ? `Priors:\n${priors}` : '';
 
   const models = opts.forecasters ?? config.forecasters;
-  const round1 = await Promise.all(models.map((m) => forecastOne(q, m, brief, '', b)));
+  const shadowModels = (process.env.FENESH_SHADOW_MODELS ?? '').split(',').map((x) => x.trim()).filter((x) => x && !models.includes(x));
+  const [round1, shadow] = await Promise.all([
+    Promise.all(models.map((m) => forecastOne(q, m, brief, priorsBlock, b))),
+    Promise.all(shadowModels.map((m) => forecastOne(q, m, brief, priorsBlock, b))),
+  ]);
   let forecasts = round1;
   const dis = disagreement(q, round1);
   let addendum: string | undefined;
@@ -265,14 +297,15 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
       });
       b.add(sv.usage.costUsd);
       addendum = sv.text.trim();
-      const round2 = await Promise.all(models.map((m) => forecastOne(q, m, brief, `Addendum from the supervisor, who checked the points the team disagreed on:\n${addendum}`, b)));
+      const round2 = await Promise.all(models.map((m) => forecastOne(q, m, brief, `${priorsBlock}\n\nAddendum from the supervisor, who checked the points the team disagreed on:\n${addendum}`, b)));
       if (round2.filter((f) => f.ok).length >= Math.min(3, models.length)) forecasts = round2;
     } catch (e: any) {
       log.warn('supervisor failed', { q: q.questionId, err: e.message });
     }
   }
   if (forecasts.filter((f) => f.ok).length < Math.min(2, models.length)) throw new Error('fewer than two forecasters succeeded');
-  const { payload, headline } = aggregate(q, forecasts);
-  const base = { plan, evidence, brief, round1, addendum, forecasts, payload, headline, costUsd: b.spent, disagreement: dis };
+  const { payload, headline, marketWeight: mw } = aggregate(q, forecasts, market);
+  const base = { plan, evidence, brief, round1, addendum, forecasts, payload, headline, costUsd: b.spent, disagreement: dis,
+    market, marketWeight: mw, gut: g.pYes != null || g.probs ? { pYes: g.pYes, probs: g.probs } : undefined, baseRate: cls.baseRateText, shadow };
   return { ...base, comment: buildComment(q, base) };
 }

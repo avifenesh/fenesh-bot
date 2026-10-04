@@ -19,6 +19,8 @@ export async function forecastAndSubmit(q: Question, opts: { forecasters?: strin
     await postComment(q.postId, r.comment);
     const status = config.dryRun ? 'dry_run' : 'submitted';
     finishRun(id, status, r);
+    const { recordFacts } = await import('./wiki.ts');
+    await recordFacts(q, r.brief);
     log.info('done', { q: q.questionId, status, headline: r.headline, usd: +r.costUsd.toFixed(3) });
     return `${q.title}\n  -> ${r.headline} ($${r.costUsd.toFixed(2)}, ${status})`;
   } catch (e: any) {
@@ -47,6 +49,9 @@ async function main() {
     const r = report();
     console.log(`resolved questions: ${r.resolved}${r.peerMean != null ? `, mean Metaculus peer score ${r.peerMean.toFixed(2)}` : ''}`);
     console.table(r.rows.map((x) => ({ component: x.component, n: x.n, meanLogScore: +x.meanLog.toFixed(4) })));
+    const { replay } = await import('./evaluate.ts');
+    console.log('aggregation variants replayed on the same questions:');
+    console.table(replay().map((x) => ({ variant: x.component, n: x.n, meanLogScore: +x.meanLog.toFixed(4) })));
   } else if (cmd === 'status') {
     console.log(await me());
     console.table(recent(25));

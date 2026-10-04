@@ -6,11 +6,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import { config } from './config.ts';
 import { log } from './log.ts';
-import { rawCdf, standardize, type Pct } from './numeric.ts';
+import { medianCdf as medianOf, rawCdf, standardize, widen as widenCdf, type Pct } from './numeric.ts';
 import type { Question } from './metaculus.ts';
 
 function db(): DatabaseSync {
   const d = new DatabaseSync(`${config.dataDir}/fenesh.db`);
+  d.exec('PRAGMA busy_timeout = 15000');
   d.exec(`CREATE TABLE IF NOT EXISTS outcomes (question_id INTEGER PRIMARY KEY, resolution TEXT, resolved_at TEXT, fetched_at TEXT);`);
   try { d.exec(`ALTER TABLE outcomes ADD COLUMN peer_score REAL`); } catch { /* exists */ }
   return d;
@@ -109,4 +110,65 @@ export function report(): { rows: ScoreRow[]; resolved: number; peerMean: number
   const rows = [...acc.entries()].map(([component, v]) => ({ component, n: v.length, meanLog: v.reduce((a, b) => a + b, 0) / v.length }))
     .sort((a, b) => b.meanLog - a.meanLog);
   return { rows, resolved: runs.length, peerMean: peers.length ? peers.reduce((a, b) => a + b, 0) / peers.length : null };
+}
+
+// ---- Aggregation replay: score alternative aggregation settings on the archived components ----
+// No model calls: every variant is recomputed from what each model said on resolved questions.
+
+const lg = (p: number) => Math.log(p / (1 - p));
+const ilg = (x: number) => 1 / (1 + Math.exp(-x));
+const clip = (p: number, c: number) => Math.min(1 - c, Math.max(c, p));
+const med = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); const k = s.length; return k % 2 ? s[(k - 1) / 2] : (s[k / 2 - 1] + s[k / 2]) / 2; };
+const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+
+type BinaryVariant = (ps: number[], market: number | null) => number;
+
+export const BINARY_VARIANTS: Record<string, BinaryVariant> = {
+  'median clip.02 (live)': (ps) => clip(med(ps), 0.02),
+  'median clip.01': (ps) => clip(med(ps), 0.01),
+  'median clip.05': (ps) => clip(med(ps), 0.05),
+  'mean clip.02': (ps) => clip(mean(ps), 0.02),
+  'logodds-mean clip.02': (ps) => clip(ilg(mean(ps.map((p) => lg(clip(p, 0.001))))), 0.02),
+  'logodds-mean x1.3 clip.02': (ps) => clip(ilg(1.3 * mean(ps.map((p) => lg(clip(p, 0.001))))), 0.02),
+  'median + market w.25': (ps, m) => clip(m == null ? med(ps) : ilg(0.75 * lg(clip(med(ps), 0.001)) + 0.25 * lg(clip(m, 0.001))), 0.02),
+  'median + market w.5': (ps, m) => clip(m == null ? med(ps) : ilg(0.5 * lg(clip(med(ps), 0.001)) + 0.5 * lg(clip(m, 0.001))), 0.02),
+  'median + market w.75': (ps, m) => clip(m == null ? med(ps) : ilg(0.25 * lg(clip(med(ps), 0.001)) + 0.75 * lg(clip(m, 0.001))), 0.02),
+};
+
+export function replay(): { component: string; n: number; meanLog: number }[] {
+  const d = db();
+  const runs = d.prepare(`SELECT r.id, r.question, o.resolution FROM runs r JOIN outcomes o ON o.question_id = r.question_id
+    WHERE r.status IN ('submitted','dry_run')`).all() as any[];
+  const acc = new Map<string, number[]>();
+  const add = (k: string, v: number | null) => { if (v == null) return; (acc.get(k) ?? acc.set(k, []).get(k)!).push(v); };
+  for (const r of runs) {
+    const q: Question = JSON.parse(r.question);
+    const comps = d.prepare(`SELECT round, model, forecast FROM components WHERE run_id = ? AND ok = 1`).all(r.id) as any[];
+    const finalRound = Math.max(1, ...comps.filter((c) => c.round < 9).map((c) => c.round));
+    const members = comps.filter((c) => c.round === finalRound).map((c) => JSON.parse(c.forecast));
+    const market = comps.find((c) => c.model === 'market');
+    const gutC = comps.find((c) => c.model === 'system1-gut');
+    if (!members.length) continue;
+    if (q.type === 'binary') {
+      const ps = members.map((m) => m.pYes).filter((p: unknown) => typeof p === 'number');
+      if (!ps.length) continue;
+      const mk = market ? JSON.parse(market.forecast).pYes : null;
+      for (const [name, f] of Object.entries(BINARY_VARIANTS)) add(name, logScore(q, { pYes: f(ps, mk) }, r.resolution));
+      if (gutC) add('median + system1 member', logScore(q, { pYes: clip(med([...ps, JSON.parse(gutC.forecast).pYes]), 0.02) }, r.resolution));
+    } else if (q.type === 'multiple_choice') {
+      const opts = q.options;
+      const norm = (pr: Record<string, number>) => { const t = opts.reduce((a, o) => a + (pr[o] ?? 0), 0) || 1; return Object.fromEntries(opts.map((o) => [o, (pr[o] ?? 0) / t])); };
+      const ms = members.map((m) => norm(m.probs ?? {}));
+      add('mc mean (live)', logScore(q, { probs: Object.fromEntries(opts.map((o) => [o, Math.max(0.005, mean(ms.map((m) => m[o])))])) }, r.resolution));
+      add('mc median', logScore(q, { probs: Object.fromEntries(opts.map((o) => [o, Math.max(0.005, med(ms.map((m) => m[o])))])) }, r.resolution));
+    } else if (q.scaling) {
+      const cdfs = members.filter((m) => m.pcts?.length).map((m) => rawCdf(q.scaling!, m.pcts));
+      if (!cdfs.length) continue;
+      for (const w of [1, 1.15, 1.3, 1.5]) {
+        add(`numeric median widen ${w}${w === 1.15 ? ' (live)' : ''}`, logScore(q, { cdf: standardize(q.scaling, widenCdf(medianOf(cdfs), w)) }, r.resolution));
+      }
+      add('numeric mean widen 1.15', logScore(q, { cdf: standardize(q.scaling, widenCdf(cdfs[0].map((_, i) => mean(cdfs.map((c) => c[i]))), 1.15)) }, r.resolution));
+    }
+  }
+  return [...acc.entries()].map(([component, v]) => ({ component, n: v.length, meanLog: mean(v) })).sort((a, b) => a.component.localeCompare(b.component));
 }

@@ -11,6 +11,7 @@ import { getPost, openQuestions, type Question } from './metaculus.ts';
 import { forecastAndSubmit } from './cli.ts';
 import { spentSince, submitted } from './store.ts';
 import { syncOutcomes } from './evaluate.ts';
+import { refreshDigests, writeOutcomes } from './wiki.ts';
 
 const connection = { addresses: [{ host: config.valkey.host, port: config.valkey.port }] };
 const POLL = 'fenesh-poll';
@@ -102,7 +103,13 @@ export async function startWorker(): Promise<void> {
   const pollWorker = new Worker(POLL, async () => pollOnce(), { connection, concurrency: 1 });
   const evaluate = new Queue(EVALUATE, { connection });
   await evaluate.upsertJobScheduler('sync-outcomes', { every: 6 * 3600_000 }, { name: 'sync', data: {} });
-  const evalWorker = new Worker(EVALUATE, async () => syncOutcomes(), { connection, concurrency: 1, lockDuration: 30 * 60_000 });
+  await evaluate.upsertJobScheduler('wiki-digest', { every: 6 * 3600_000 }, { name: 'digest', data: {} });
+  const evalWorker = new Worker(EVALUATE, async (job: Job) => {
+    if (job.name === 'digest') return refreshDigests();
+    const n = await syncOutcomes();
+    writeOutcomes();
+    return n;
+  }, { connection, concurrency: 1, lockDuration: 30 * 60_000 });
   const questionWorker = new Worker(QUESTION, processQuestion, {
     connection, concurrency: config.questionConcurrency, lockDuration: 10 * 60_000, stalledInterval: 60_000,
   });

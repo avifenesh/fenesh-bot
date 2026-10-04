@@ -1,0 +1,115 @@
+{
+ "source": "Resolved binary questions of the Metaculus FutureEval Spring 2026 and Summer 2026 bot tournaments and seven MiniBench rounds (Jun-Sep 2026)",
+ "overall": {
+  "yes": 180,
+  "n": 539
+ },
+ "byTemplate": {
+  "event happens before/by deadline": {
+   "yes": 58,
+   "n": 233
+  },
+  "state/event on, at, or as of a date/event": {
+   "yes": 23,
+   "n": 66
+  },
+  "count/quantity threshold": {
+   "yes": 22,
+   "n": 55
+  },
+  "market/asset price threshold": {
+   "yes": 15,
+   "n": 41
+  },
+  "election/referendum/contest outcome": {
+   "yes": 20,
+   "n": 36
+  },
+  "other": {
+   "yes": 15,
+   "n": 34
+  },
+  "event occurs within a date window": {
+   "yes": 5,
+   "n": 26
+  },
+  "record / ranking / leaderboard position": {
+   "yes": 8,
+   "n": 19
+  },
+  "economic indicator threshold": {
+   "yes": 3,
+   "n": 8
+  },
+  "still/remain (status-quo YES phrasing)": {
+   "yes": 6,
+   "n": 8
+  },
+  "outcome of a scheduled decision (court/central bank/regulator)": {
+   "yes": 2,
+   "n": 7
+  },
+  "one option of a split multi-part question \"(X)\"": {
+   "yes": 3,
+   "n": 4
+  },
+  "compare value at two dates/entities": {
+   "yes": 0,
+   "n": 2
+  }
+ },
+ "byTopic": {
+  "politics/elections": {
+   "yes": 42,
+   "n": 105
+  },
+  "geopolitics/conflict": {
+   "yes": 25,
+   "n": 88
+  },
+  "economics/markets": {
+   "yes": 21,
+   "n": 71
+  },
+  "tech/AI/computing": {
+   "yes": 18,
+   "n": 61
+  },
+  "law/courts": {
+   "yes": 15,
+   "n": 48
+  },
+  "health": {
+   "yes": 11,
+   "n": 42
+  },
+  "science/space": {
+   "yes": 11,
+   "n": 31
+  },
+  "sports/entertainment": {
+   "yes": 13,
+   "n": 30
+  },
+  "environment/weather/climate": {
+   "yes": 7,
+   "n": 26
+  },
+  "crypto": {
+   "yes": 11,
+   "n": 23
+  },
+  "uncategorized": {
+   "yes": 3,
+   "n": 6
+  },
+  "meta": {
+   "yes": 2,
+   "n": 5
+  },
+  "social": {
+   "yes": 1,
+   "n": 3
+  }
+ }
+}
