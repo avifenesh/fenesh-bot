@@ -1,41 +1,45 @@
 {
   "fitted": "2026-10-04 by sidecar/calibrate.py on zero-shot LAYA answers to resolved Metaculus bot-tournament questions (spring and summer 2026, data/census), question and background only, no research brief",
-  "model": "convaiinnovations/laya-multilingual, LAYA_REVISION=reviewed (laya 0.3.26)",
+  "model": "convaiinnovations/laya, multilingual checkpoint, revision 7b928d828b7b0e022f929d9bd2e44165aa270148 (laya 0.3.26)",
   "binary": {
-    "a": 0.017,
-    "b": -0.5611
+    "a": 0.1255,
+    "b": -0.8089
   },
   "threshold": {
-    "a": -0.1966,
-    "b": 0.9807,
-    "c": 2.5651
+    "a": -0.0621,
+    "b": 0.3265,
+    "c": 1.6138
   },
   "choice": {
-    "t": 1,
-    "mix": 1.0
+    "t": 2,
+    "mix": 0.45
   },
   "metrics": {
     "binary": {
-      "n": 141,
-      "yes_rate": 0.369,
-      "auc_noul": 0.515,
-      "auc_choice_yes_first": 0.449,
-      "auc_choice_no_first": 0.436,
-      "logloss_raw": 1.315,
-      "cv_logloss_calibrated": 0.6948,
-      "cv_logloss_base_rate": 0.682
+      "n": 419,
+      "yes_rate": 0.341,
+      "auc_noul": 0.567,
+      "auc_choice_yes_first": 0.506,
+      "auc_choice_no_first": 0.5,
+      "logloss_raw": 1.1916,
+      "cv_logloss_calibrated": 0.6418,
+      "cv_logloss_base_rate": 0.6468
     },
     "threshold": {
-      "questions": 19,
-      "n": 95,
-      "auc_raw": 0.45,
-      "logloss_raw": 1.1723,
-      "cv_logloss_calibrated": 0.3196,
-      "cv_logloss_location_only": 0.3505
+      "questions": 167,
+      "n": 835,
+      "auc_raw": 0.481,
+      "logloss_raw": 1.0668,
+      "cv_logloss_calibrated": 0.4008,
+      "cv_logloss_location_only": 0.3978
     },
     "choice": {
-      "n": 0,
-      "note": "no data yet: uniform over the options"
+      "n": 52,
+      "top1_accuracy": 0.288,
+      "chance_top1": 0.219,
+      "nll_raw": 1.7153,
+      "cv_nll_calibrated": 1.5807,
+      "nll_uniform": 1.5662
     }
   }
 }
