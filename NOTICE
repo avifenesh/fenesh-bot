@@ -1,0 +1,9 @@
+fenesh-bot includes code ported from forecasting-tools
+(https://github.com/Metaculus/forecasting-tools), used under the MIT License:
+
+  Copyright (c) 2024 CodexVeritas
+
+The ported parts are the numeric value/location mapping and the CDF
+standardization in src/numeric.ts. Prompt rules in src/prompts.ts draw on
+lessons published with nostreambot (https://github.com/No-Stream/metaculus-bot,
+MIT License, Copyright (c) 2026 No-Stream); no code was copied from it.

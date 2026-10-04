@@ -1,0 +1,28 @@
+[Unit]
+Description=fenesh-bot Metaculus forecasting bot (glide-mq worker)
+After=network-online.target valkey-server.service
+Wants=network-online.target
+Requires=valkey-server.service
+
+[Service]
+Type=simple
+User=fenesh
+Group=fenesh
+WorkingDirectory=/opt/fenesh-bot
+EnvironmentFile=/etc/fenesh-bot/env
+Environment=FENESH_DATA_DIR=/var/lib/fenesh-bot
+ExecStart=/usr/local/bin/node src/cli.ts worker
+Restart=always
+RestartSec=15
+TimeoutStopSec=120
+# Hardening: the bot needs outbound HTTPS and its data dir, nothing else.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/fenesh-bot
+MemoryMax=2G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target
