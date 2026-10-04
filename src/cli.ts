@@ -9,24 +9,32 @@ import { config } from './config.ts';
 import { log } from './log.ts';
 import { getPost, me, postComment, postForecast, type Question } from './metaculus.ts';
 import { runQuestion } from './pipeline.ts';
-import { finishRun, recent, spentSince, startRun, submitted } from './store.ts';
+import { commentFailed, finishRun, recent, spentSince, startRun, submitted } from './store.ts';
 
 export async function forecastAndSubmit(q: Question, opts: { forecasters?: string[]; supervisor?: boolean } = {}): Promise<string> {
   const id = startRun(q);
+  let r;
   try {
-    const r = await runQuestion(q, opts);
+    r = await runQuestion(q, opts);
     await postForecast(q.questionId, r.payload);
-    await postComment(q.postId, r.comment);
-    const status = config.dryRun ? 'dry_run' : 'submitted';
-    finishRun(id, status, r);
-    const { recordFacts } = await import('./wiki.ts');
-    await recordFacts(q, r.brief);
-    log.info('done', { q: q.questionId, status, headline: r.headline, usd: +r.costUsd.toFixed(3) });
-    return `${q.title}\n  -> ${r.headline} ($${r.costUsd.toFixed(2)}, ${status})`;
   } catch (e: any) {
-    finishRun(id, 'failed', undefined, e.message);
+    finishRun(id, 'failed', r, e.message);
     throw e;
   }
+  // The forecast is in: record it before anything else can fail, so a retry never resubmits.
+  const status = config.dryRun ? 'dry_run' : 'submitted';
+  finishRun(id, status, r);
+  try {
+    await postComment(q.postId, r.comment);
+  } catch (e: any) {
+    // Comments are required for prizes; keep the text and flag it for a manual repost.
+    commentFailed(id, e.message);
+    log.error('comment failed', { q: q.questionId, run: id, err: e.message });
+  }
+  const { recordFacts } = await import('./wiki.ts');
+  await recordFacts(q, r.brief);
+  log.info('done', { q: q.questionId, status, headline: r.headline, usd: +r.costUsd.toFixed(3) });
+  return `${q.title}\n  -> ${r.headline} ($${r.costUsd.toFixed(2)}, ${status})`;
 }
 
 async function main() {

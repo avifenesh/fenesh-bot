@@ -29,13 +29,22 @@ export interface ResearchSource {
   tools(): ToolSpec[];
 }
 
+// Sources that answer 429 are skipped for a while instead of being hit on every call.
+const coolUntil = new Map<string, number>();
+function cooling(name: string): void {
+  if ((coolUntil.get(name) ?? 0) > Date.now()) throw new Error(`${name} rate-limited, cooling down`);
+}
+function cool(name: string, minutes = 10): void { coolUntil.set(name, Date.now() + minutes * 60_000); }
+
 // ---------- GDELT news (keyless; one request per 5 s) ----------
 
 async function gdeltSearch(query: string, days = 30, max = 15): Promise<Evidence[]> {
   const u = new URL('https://api.gdeltproject.org/api/v2/doc/doc');
   u.search = new URLSearchParams({ query: `${query} sourcelang:english`, mode: 'artlist', maxrecords: String(max), format: 'json', timespan: `${days}d`, sort: 'datedesc' }).toString();
+  cooling('gdelt');
   const r = await get(u.toString(), { timeoutMs: 30_000 });
-  if (!r.text.startsWith('{')) return []; // GDELT answers plain-text errors for bad queries and rate limits
+  if (r.status === 429 || /limit requests/i.test(r.text.slice(0, 200))) { cool('gdelt'); throw new Error('gdelt rate-limited'); }
+  if (!r.text.startsWith('{')) return []; // GDELT answers plain-text errors for bad queries
   const d = JSON.parse(r.text);
   return (d.articles ?? []).map((a: any) => ({
     source: 'gdelt', title: a.title, url: a.url,
@@ -64,12 +73,14 @@ const gdelt: ResearchSource = {
 // ---------- Exa web search through its hosted MCP endpoint ----------
 
 async function exaSearch(query: string, n = 8): Promise<Evidence[]> {
+  cooling('exa');
   const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
   if (process.env.EXA_API_KEY) headers['x-api-key'] = process.env.EXA_API_KEY;
   const r = await get('https://mcp.exa.ai/mcp', {
     method: 'POST', headers, timeoutMs: 30_000,
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'web_search_exa', arguments: { query, numResults: n } } }),
   });
+  if (r.status === 429) { cool('exa'); throw new Error('exa HTTP 429'); }
   if (r.status >= 400) throw new Error(`exa HTTP ${r.status}`);
   let msg: any;
   if (r.type.includes('event-stream')) {

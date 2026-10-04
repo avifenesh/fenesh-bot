@@ -35,7 +35,7 @@ function cost(spec: ModelSpec, input: number, output: number): number {
 
 async function post(url: string, body: unknown, timeoutMs: number): Promise<any> {
   let lastErr: unknown;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
@@ -105,7 +105,7 @@ async function callConverse(spec: ModelSpec, prompt: string, o: CallOptions): Pr
     };
     if (o.system) body.system = [{ text: o.system }];
     if (toolConfig) body.toolConfig = toolConfig;
-    const d = await post(url, body, o.timeoutMs ?? 20 * 60_000);
+    const d = await post(url, body, o.timeoutMs ?? 15 * 60_000);
     input += d.usage?.inputTokens ?? 0;
     output += d.usage?.outputTokens ?? 0;
     const content: any[] = d.output?.message?.content ?? [];
@@ -143,7 +143,7 @@ async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): P
     };
     if (o.system) body.instructions = o.system;
     if (tools?.length) body.tools = tools;
-    const d = await post(url, body, o.timeoutMs ?? 20 * 60_000);
+    const d = await post(url, body, o.timeoutMs ?? 15 * 60_000);
     input += d.usage?.input_tokens ?? 0;
     output += d.usage?.output_tokens ?? 0;
     const items: any[] = d.output ?? [];
@@ -185,7 +185,7 @@ async function callChat(spec: ModelSpec, prompt: string, o: CallOptions): Promis
     };
     if (spec.serviceTier) body.service_tier = spec.serviceTier;
     if (tools?.length) body.tools = tools;
-    const d = await post(url, body, o.timeoutMs ?? 20 * 60_000);
+    const d = await post(url, body, o.timeoutMs ?? 15 * 60_000);
     input += d.usage?.prompt_tokens ?? 0;
     output += d.usage?.completion_tokens ?? 0;
     const msg = d.choices?.[0]?.message ?? {};

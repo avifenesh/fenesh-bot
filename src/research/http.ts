@@ -1,5 +1,7 @@
 // HTTP for research sources: timeouts, a per-host spacing, and readable text from HTML.
 
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { parseHTML } from 'linkedom';
 import { Readability } from '@mozilla/readability';
 import { config } from '../config.ts';
@@ -63,8 +65,44 @@ export function htmlToText(html: string): { title: string; text: string } {
 // Reading a single page the way a person's browser would; many news sites refuse non-browser agents.
 const BROWSER_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
 
+// The research model chooses URLs, and fetched pages can try to steer it, so page fetches only go
+// to public addresses: no loopback, private, link-local or metadata ranges, checked on every redirect.
+function privateIp(ip: string): boolean {
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
+  }
+  const v = ip.toLowerCase();
+  if (v.startsWith('::ffff:')) return privateIp(v.slice(7));
+  return v === '::1' || v === '::' || v.startsWith('fc') || v.startsWith('fd') || v.startsWith('fe8') || v.startsWith('fe9')
+    || v.startsWith('fea') || v.startsWith('feb') || v.startsWith('ff');
+}
+
+export async function assertPublicUrl(raw: string): Promise<URL> {
+  const u = new URL(raw);
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error(`blocked scheme ${u.protocol}`);
+  if (u.port && !['80', '443', '8080', '8443'].includes(u.port)) throw new Error(`blocked port ${u.port}`);
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  const addrs = isIP(host) ? [host] : (await lookup(host, { all: true })).map((a) => a.address);
+  if (!addrs.length || addrs.some(privateIp)) throw new Error(`blocked non-public address for ${host}`);
+  return u;
+}
+
 export async function fetchPage(url: string, maxChars = 20_000): Promise<{ url: string; title: string; text: string }> {
-  const r = await get(url, { timeoutMs: 30_000, headers: { 'user-agent': BROWSER_UA, accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8', 'accept-language': 'en-US,en;q=0.9' } });
+  const headers = { 'user-agent': BROWSER_UA, accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8', 'accept-language': 'en-US,en;q=0.9' };
+  let current = (await assertPublicUrl(url)).toString();
+  let res: Response | null = null;
+  for (let hop = 0; hop < 6; hop++) {
+    await throttle(new URL(current).hostname);
+    res = await fetch(current, { headers, redirect: 'manual', signal: AbortSignal.timeout(30_000) });
+    if (res.status < 300 || res.status >= 400) break;
+    const loc = res.headers.get('location');
+    if (!loc) break;
+    current = (await assertPublicUrl(new URL(loc, current).toString())).toString();
+  }
+  if (!res) throw new Error('no response');
+  const r = { status: res.status, type: res.headers.get('content-type') ?? '', text: await res.text() };
   if (r.status >= 400) throw new Error(`HTTP ${r.status}`);
   if (r.type.includes('json') || r.type.includes('text/plain') || r.type.includes('csv')) {
     return { url, title: url, text: r.text.slice(0, maxChars) };

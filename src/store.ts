@@ -44,7 +44,8 @@ function open(): DatabaseSync {
       forecast TEXT,                 -- pYes / probs / pcts
       summary TEXT,
       cost_usd REAL,
-      error TEXT
+      error TEXT,
+      reasoning TEXT
     );
     CREATE TABLE IF NOT EXISTS outcomes (
       question_id INTEGER PRIMARY KEY,
@@ -53,6 +54,9 @@ function open(): DatabaseSync {
       fetched_at TEXT
     );
   `);
+  for (const ddl of ['ALTER TABLE components ADD COLUMN reasoning TEXT', 'ALTER TABLE runs ADD COLUMN comment_error TEXT']) {
+    try { db.exec(ddl); } catch { /* column exists */ }
+  }
   return db;
 }
 
@@ -70,13 +74,13 @@ export function finishRun(id: number, status: string, r?: RunResult, error?: str
     r?.costUsd ?? null, r?.disagreement ?? null, r ? JSON.stringify(r.plan) : null, r ? JSON.stringify(r.evidence) : null,
     r?.brief ?? null, r?.addendum ?? null, r?.comment ?? null, id);
   if (!r) return;
-  const ins = d.prepare('INSERT INTO components (run_id, round, model, ok, forecast, summary, cost_usd, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+  const ins = d.prepare('INSERT INTO components (run_id, round, model, ok, forecast, summary, cost_usd, error, reasoning) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
   const put = (round: number, fs: RunResult['forecasts']) => {
-    for (const f of fs) ins.run(id, round, f.model, f.ok ? 1 : 0, JSON.stringify({ pYes: f.pYes, probs: f.probs, pcts: f.pcts }), f.summary ?? null, f.costUsd, f.error ?? null);
+    for (const f of fs) ins.run(id, round, f.model, f.ok ? 1 : 0, JSON.stringify({ pYes: f.pYes, probs: f.probs, pcts: f.pcts }), f.summary ?? null, f.costUsd, f.error ?? null, f.reasoning ?? null);
   };
   // Round 0: components that are logged for evaluation but may not be in the aggregate.
-  if (r.market) ins.run(id, 0, 'market', 1, JSON.stringify({ pYes: r.market.quote.probability }), `${r.market.quote.venue}: ${r.market.quote.question} (confidence ${r.market.confidence}, weight ${r.marketWeight})`, 0, null);
-  if (r.gut) ins.run(id, 0, 'system1-gut', 1, JSON.stringify(r.gut), null, 0, null);
+  if (r.market) ins.run(id, 0, 'market', 1, JSON.stringify({ pYes: r.market.quote.probability }), `${r.market.quote.venue}: ${r.market.quote.question} (confidence ${r.market.confidence}, weight ${r.marketWeight})`, 0, null, null);
+  if (r.gut) ins.run(id, 0, 'system1-gut', 1, JSON.stringify(r.gut), null, 0, null, null);
   put(1, r.round1);
   if (r.addendum) put(2, r.forecasts);
   if (r.shadow?.length) put(9, r.shadow); // shadow models: scored, never submitted
@@ -95,4 +99,14 @@ export function spentSince(iso: string): number {
 
 export function recent(limit = 20): any[] {
   return open().prepare(`SELECT id, question_id, type, status, headline, cost_usd, started_at, finished_at, substr(title, 1, 80) AS title FROM runs ORDER BY id DESC LIMIT ?`).all(limit);
+}
+
+// A run for this question started recently and has not finished: another job is working on it.
+export function inFlight(questionId: number, maxAgeMin = 45): boolean {
+  const since = new Date(Date.now() - maxAgeMin * 60_000).toISOString();
+  return !!open().prepare(`SELECT 1 FROM runs WHERE question_id = ? AND status = 'running' AND started_at >= ? LIMIT 1`).get(questionId, since);
+}
+
+export function commentFailed(id: number, error: string): void {
+  open().prepare('UPDATE runs SET comment_error = ? WHERE id = ?').run(error, id);
 }

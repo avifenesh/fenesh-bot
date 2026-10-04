@@ -4,12 +4,12 @@
 //                    plus a delayed "safety" job per question that forecasts on the lean path
 //                    25 min before close if nothing was submitted by then.
 
-import { Queue, Worker, type Job } from 'glide-mq';
+import { Queue, UnrecoverableError, Worker, type Job } from 'glide-mq';
 import { config } from './config.ts';
 import { log } from './log.ts';
 import { getPost, openQuestions, type Question } from './metaculus.ts';
 import { forecastAndSubmit } from './cli.ts';
-import { spentSince, submitted } from './store.ts';
+import { inFlight, spentSince, submitted } from './store.ts';
 import { syncOutcomes } from './evaluate.ts';
 import { refreshDigests, writeOutcomes } from './wiki.ts';
 
@@ -80,6 +80,7 @@ export async function pollOnce(): Promise<string> {
 export async function processQuestion(job: Job): Promise<unknown> {
   const d = job.data as QuestionJob;
   if (submitted(d.questionId)) return { skipped: 'already submitted' };
+  if (inFlight(d.questionId)) return { skipped: 'another job is forecasting this question' };
   const q = (await getPost(d.postId)).find((x) => x.questionId === d.questionId);
   if (!q) return { skipped: 'question gone' };
   if (q.alreadyForecast) return { skipped: 'already forecast on Metaculus' };
@@ -92,8 +93,14 @@ export async function processQuestion(job: Job): Promise<unknown> {
   const isMiniBench = q.tournaments.some((t) => /minibench/i.test(t));
   const lean = d.lean || job.name === 'safety' || isMiniBench || overBudget || msToClose < 20 * 60_000;
   if (overBudget) log.warn('daily budget exceeded, lean path', { budget: dailyBudget });
-  const line = await forecastAndSubmit(q, lean ? { forecasters: leanForecasters, supervisor: false } : {});
-  return { line, lean };
+  try {
+    const line = await forecastAndSubmit(q, lean ? { forecasters: leanForecasters, supervisor: false } : {});
+    return { line, lean };
+  } catch (e: any) {
+    // Metaculus refusing the forecast (closed question, bad payload) will not change on retry.
+    if (/^metaculus 4\d\d/.test(e.message ?? '') && !/^metaculus 429/.test(e.message)) throw new UnrecoverableError(e.message);
+    throw e;
+  }
 }
 
 export async function startWorker(): Promise<void> {

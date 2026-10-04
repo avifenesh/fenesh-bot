@@ -144,6 +144,7 @@ function parseForecast(q: Question, j: any): Pick<ForecasterOutput, 'pYes' | 'pr
     return { p, v: val };
   }).filter((x) => Number.isFinite(x.p) && Number.isFinite(x.v));
   if (pcts.length < 5) throw new Error('too few percentiles');
+  if (q.scaling) rawCdf(q.scaling, pcts); // throws on percentiles that cannot form a CDF
   return { pcts, summary };
 }
 
@@ -254,7 +255,7 @@ function buildComment(q: Question, r: Omit<RunResult, 'comment'>): string {
   const parts = [
     `Forecast: ${r.headline}`,
     '',
-    `Aggregation: ${q.type === 'binary' ? 'median of model probabilities, kept within 2-98%' : q.type === 'multiple_choice' ? 'mean of model probabilities per option' : 'pointwise median of model CDFs, widened 15% around the median'}.`,
+    `Aggregation: ${q.type === 'binary' ? `median of model probabilities, kept within ${config.binaryClip * 100}-${100 - config.binaryClip * 100}%` : q.type === 'multiple_choice' ? 'mean of model probabilities per option' : `pointwise median of model CDFs, widened ${Math.round((Number(process.env.FENESH_NUMERIC_WIDEN ?? 1.15) - 1) * 100)}% around the median`}.`,
     '',
     ...(r.market ? [`Matching market: ${r.market.quote.question} on ${r.market.quote.venue} at ${(r.market.quote.probability * 100).toFixed(1)}% (${r.market.quote.url}), weight ${r.marketWeight}.`, ''] : []),
     'Model forecasts:',
