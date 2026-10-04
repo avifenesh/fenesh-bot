@@ -42,7 +42,7 @@ export interface RunResult {
   disagreement: number;
 }
 
-class Budget {
+export class Budget {
   spent = 0;
   cap: number;
   constructor(cap: number) { this.cap = cap; }
@@ -266,8 +266,7 @@ function buildComment(q: Question, r: Omit<RunResult, 'comment'>): string {
   return parts.join('\n').slice(0, 9500);
 }
 
-export async function runQuestion(q: Question, opts: { forecasters?: string[]; supervisor?: boolean } = {}): Promise<RunResult> {
-  const b = new Budget(config.maxCostPerQuestion);
+export async function runQuestion(q: Question, opts: { forecasters?: string[]; supervisor?: boolean } = {}, b = new Budget(config.maxCostPerQuestion)): Promise<RunResult> {
   const plan = await makePlan(q, b);
   const [evidence, cls, market] = await Promise.all([gather(q, plan), classify(q), matchMarket(q, plan.marketQueries)]);
   log.info('gathered', { q: q.questionId, items: evidence.length, market: market ? `${market.quote.venue} ${market.quote.probability} c=${market.confidence}` : null, bySource: Object.fromEntries(SOURCES.map((s) => [s.name, evidence.filter((e) => e.source === s.name).length])) });

@@ -8,17 +8,19 @@
 import { config } from './config.ts';
 import { log } from './log.ts';
 import { getPost, me, postComment, postForecast, type Question } from './metaculus.ts';
-import { runQuestion } from './pipeline.ts';
+import { Budget, runQuestion } from './pipeline.ts';
 import { commentFailed, finishRun, recent, spentSince, startRun, submitted } from './store.ts';
 
 export async function forecastAndSubmit(q: Question, opts: { forecasters?: string[]; supervisor?: boolean } = {}): Promise<string> {
   const id = startRun(q);
+  const budget = new Budget(config.maxCostPerQuestion);
   let r;
   try {
-    r = await runQuestion(q, opts);
+    r = await runQuestion(q, opts, budget);
     await postForecast(q.questionId, r.payload);
   } catch (e: any) {
-    finishRun(id, 'failed', r, e.message);
+    // Record what the failed attempt spent so the daily budget sees it.
+    finishRun(id, 'failed', r, e.message, budget.spent);
     throw e;
   }
   // The forecast is in: record it before anything else can fail, so a retry never resubmits.

@@ -66,12 +66,12 @@ export function startRun(q: Question): number {
   return Number(r.lastInsertRowid);
 }
 
-export function finishRun(id: number, status: string, r?: RunResult, error?: string): void {
+export function finishRun(id: number, status: string, r?: RunResult, error?: string, spentUsd?: number): void {
   const d = open();
   d.prepare(`UPDATE runs SET finished_at = ?, status = ?, error = ?, headline = ?, payload = ?, cost_usd = ?, disagreement = ?,
     plan = ?, evidence = ?, brief = ?, addendum = ?, comment = ? WHERE id = ?`).run(
     new Date().toISOString(), status, error ?? null, r?.headline ?? null, r ? JSON.stringify(r.payload) : null,
-    r?.costUsd ?? null, r?.disagreement ?? null, r ? JSON.stringify(r.plan) : null, r ? JSON.stringify(r.evidence) : null,
+    r?.costUsd ?? spentUsd ?? null, r?.disagreement ?? null, r ? JSON.stringify(r.plan) : null, r ? JSON.stringify(r.evidence) : null,
     r?.brief ?? null, r?.addendum ?? null, r?.comment ?? null, id);
   if (!r) return;
   const ins = d.prepare('INSERT INTO components (run_id, round, model, ok, forecast, summary, cost_usd, error, reasoning) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');

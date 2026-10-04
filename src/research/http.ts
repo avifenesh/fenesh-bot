@@ -1,7 +1,7 @@
 // HTTP for research sources: timeouts, a per-host spacing, and readable text from HTML.
 
 import { lookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
+import { BlockList, isIP } from 'node:net';
 import { parseHTML } from 'linkedom';
 import { Readability } from '@mozilla/readability';
 import { config } from '../config.ts';
@@ -66,17 +66,28 @@ export function htmlToText(html: string): { title: string; text: string } {
 const BROWSER_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
 
 // The research model chooses URLs, and fetched pages can try to steer it, so page fetches only go
-// to public addresses: no loopback, private, link-local or metadata ranges, checked on every redirect.
-function privateIp(ip: string): boolean {
-  if (isIP(ip) === 4) {
-    const [a, b] = ip.split('.').map(Number);
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
-      || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
-  }
-  const v = ip.toLowerCase();
-  if (v.startsWith('::ffff:')) return privateIp(v.slice(7));
-  return v === '::1' || v === '::' || v.startsWith('fc') || v.startsWith('fd') || v.startsWith('fe8') || v.startsWith('fe9')
-    || v.startsWith('fea') || v.startsWith('feb') || v.startsWith('ff');
+// to public addresses: no loopback, private, link-local, CGNAT, multicast or metadata ranges, checked
+// on every redirect. IPv4-mapped and NAT64 IPv6 forms are unwrapped first, in dotted or hex notation.
+const blocked = new BlockList();
+for (const [net, bits] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
+  ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 3]] as const) blocked.addSubnet(net, bits, 'ipv4');
+for (const [net, bits] of [['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8], ['2001:db8::', 32]] as const) blocked.addSubnet(net, bits, 'ipv6');
+
+function embeddedIpv4(v6: string): string | null {
+  // ::ffff:a.b.c.d, ::ffff:hhhh:hhhh, ::a.b.c.d, 64:ff9b::hhhh:hhhh (NAT64)
+  const m = v6.toLowerCase().match(/^(?:::ffff:|::|64:ff9b::)(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/);
+  if (!m) return null;
+  if (m[1]) return m[1];
+  const hi = parseInt(m[2], 16), lo = parseInt(m[3], 16);
+  return [hi >> 8, hi & 255, lo >> 8, lo & 255].join('.');
+}
+
+export function privateIp(ip: string): boolean {
+  if (isIP(ip) === 4) return blocked.check(ip, 'ipv4');
+  if (isIP(ip) !== 6) return true; // not an address we understand: refuse
+  const v4 = embeddedIpv4(ip);
+  if (v4) return blocked.check(v4, 'ipv4');
+  return blocked.check(ip, 'ipv6');
 }
 
 export async function assertPublicUrl(raw: string): Promise<URL> {

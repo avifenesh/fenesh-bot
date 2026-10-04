@@ -80,7 +80,11 @@ export async function pollOnce(): Promise<string> {
 export async function processQuestion(job: Job): Promise<unknown> {
   const d = job.data as QuestionJob;
   if (submitted(d.questionId)) return { skipped: 'already submitted' };
-  if (inFlight(d.questionId)) return { skipped: 'another job is forecasting this question' };
+  if (inFlight(d.questionId)) {
+    // The safety job can stand down; the main job retries (backoff) until the other run finishes.
+    if (job.name === 'safety') return { skipped: 'another job is forecasting this question' };
+    throw new Error('question is in flight in another run; retrying later');
+  }
   const q = (await getPost(d.postId)).find((x) => x.questionId === d.questionId);
   if (!q) return { skipped: 'question gone' };
   if (q.alreadyForecast) return { skipped: 'already forecast on Metaculus' };
