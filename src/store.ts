@@ -110,3 +110,9 @@ export function inFlight(questionId: number, maxAgeMin = 45): boolean {
 export function commentFailed(id: number, error: string): void {
   open().prepare('UPDATE runs SET comment_error = ? WHERE id = ?').run(error, id);
 }
+
+// At worker start nothing can be running yet: runs left in 'running' were cut off by a crash or restart.
+export function markInterrupted(): number {
+  const r = open().prepare(`UPDATE runs SET status = 'failed', error = 'interrupted (worker restarted)', finished_at = ? WHERE status = 'running'`).run(new Date().toISOString());
+  return Number(r.changes);
+}

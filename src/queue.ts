@@ -9,7 +9,7 @@ import { config } from './config.ts';
 import { log } from './log.ts';
 import { getPost, openQuestions, type Question } from './metaculus.ts';
 import { forecastAndSubmit } from './cli.ts';
-import { inFlight, spentSince, submitted } from './store.ts';
+import { inFlight, markInterrupted, spentSince, submitted } from './store.ts';
 import { syncOutcomes } from './evaluate.ts';
 import { refreshDigests, writeOutcomes } from './wiki.ts';
 
@@ -104,6 +104,8 @@ export async function processQuestion(job: Job): Promise<unknown> {
 }
 
 export async function startWorker(): Promise<void> {
+  const interrupted = markInterrupted();
+  if (interrupted) log.warn('runs interrupted by the last restart', { count: interrupted });
   const poll = new Queue(POLL, { connection });
   await poll.upsertJobScheduler('poll-open-questions', { every: config.pollEveryMs }, { name: 'poll', data: {} });
 
