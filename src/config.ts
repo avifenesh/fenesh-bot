@@ -56,7 +56,7 @@ export const config = {
   bedrockRegion: env.BEDROCK_REGION ?? 'us-east-1',
   valkey: { host: env.VALKEY_HOST ?? '127.0.0.1', port: Number(env.VALKEY_PORT ?? 6379) },
   dataDir: env.FENESH_DATA_DIR ?? new URL('../data/', import.meta.url).pathname,
-  // Tournaments polled for open questions. MiniBench rounds are discovered at runtime.
+  // Tournaments polled for open questions. The current MiniBench round is polled by its slug, 'minibench'.
   tournaments: list('FENESH_TOURNAMENTS', 'fall-futureeval-2026'),
   discoverMiniBench: (env.FENESH_MINIBENCH ?? '1') === '1',
   forecasters: list('FENESH_FORECASTERS', 'gpt-6-astra,gpt-6.1-sol,opus-5.5,fable-5.1,gpt-oss-120b'),
