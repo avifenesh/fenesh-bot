@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# install.sh - set up or update fenesh-bot on an Ubuntu 24.04 host (run as root on the host).
+# Usage: deploy/install.sh <path-to-release-tarball>
+# The env file /etc/fenesh-bot/env (0600, owner fenesh) must be copied separately; see .env.example.
+set -euo pipefail
+TARBALL=${1:?usage: install.sh <release.tar.gz>}
+NODE_VERSION=${NODE_VERSION:-24.11.1}
+
+id fenesh >/dev/null 2>&1 || useradd --system --home /var/lib/fenesh-bot --shell /usr/sbin/nologin fenesh
+install -d -o fenesh -g fenesh -m 0750 /var/lib/fenesh-bot
+install -d -o root -g fenesh -m 0750 /etc/fenesh-bot
+
+# Node: official binary, pinned. Strip-types needs Node >= 23.6.
+if ! /usr/local/bin/node --version 2>/dev/null | grep -q "v${NODE_VERSION}"; then
+  arch=$(uname -m); [ "$arch" = x86_64 ] && arch=x64; [ "$arch" = aarch64 ] && arch=arm64
+  curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${arch}.tar.xz" -o /tmp/node.tar.xz
+  tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
+  rm -f /tmp/node.tar.xz
+fi
+
+# Valkey on loopback with an append-only log so queued jobs survive restarts.
+if ! command -v valkey-server >/dev/null; then
+  apt-get update -qq && apt-get install -y -qq valkey-server || apt-get install -y -qq valkey
+fi
+conf=$(ls /etc/valkey/valkey.conf 2>/dev/null || true)
+if [ -n "$conf" ]; then
+  sed -i -E 's/^#? ?bind .*/bind 127.0.0.1 -::1/; s/^appendonly .*/appendonly yes/; s/^#? ?maxmemory .*/maxmemory 512mb/' "$conf"
+  grep -q '^appendonly yes' "$conf" || echo 'appendonly yes' >> "$conf"
+  systemctl enable --now valkey-server
+  systemctl restart valkey-server
+fi
+
+# Code: replace /opt/fenesh-bot atomically, keep data and env outside it.
+rm -rf /opt/fenesh-bot.new && mkdir -p /opt/fenesh-bot.new
+tar -xzf "$TARBALL" -C /opt/fenesh-bot.new
+(cd /opt/fenesh-bot.new && /usr/local/bin/npm ci --omit=dev --no-audit --no-fund)
+rm -rf /opt/fenesh-bot.old; [ -d /opt/fenesh-bot ] && mv /opt/fenesh-bot /opt/fenesh-bot.old
+mv /opt/fenesh-bot.new /opt/fenesh-bot
+chown -R root:fenesh /opt/fenesh-bot && chmod -R g+rX,o-rwx /opt/fenesh-bot
+
+install -m 0644 /opt/fenesh-bot/deploy/fenesh-bot.service /etc/systemd/system/fenesh-bot.service
+systemctl daemon-reload
+if [ -f /etc/fenesh-bot/env ]; then
+  systemctl enable fenesh-bot
+  systemctl restart fenesh-bot
+  systemctl --no-pager status fenesh-bot | head -5
+else
+  echo "env file /etc/fenesh-bot/env missing; service installed but not started"
+fi
