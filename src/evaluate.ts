@@ -87,10 +87,10 @@ export function logScore(q: Question, forecast: { pYes?: number; probs?: Record<
 export interface ScoreRow { component: string; n: number; meanLog: number }
 
 // Mean log score per component (each model per round, and what we submitted).
-export function report(): { rows: ScoreRow[]; resolved: number; peerMean: number | null } {
+export function report(statuses = ['submitted', 'dry_run']): { rows: ScoreRow[]; resolved: number; peerMean: number | null } {
   const d = db();
   const runs = d.prepare(`SELECT r.id, r.question, r.payload, o.resolution, o.peer_score FROM runs r
-    JOIN outcomes o ON o.question_id = r.question_id WHERE r.status IN ('submitted','dry_run')`).all() as any[];
+    JOIN outcomes o ON o.question_id = r.question_id WHERE r.status IN (${statuses.map(() => '?').join(',')})`).all(...statuses) as any[];
   const acc = new Map<string, number[]>();
   const add = (k: string, v: number | null) => { if (v == null) return; (acc.get(k) ?? acc.set(k, []).get(k)!).push(v); };
   const peers: number[] = [];
@@ -135,10 +135,10 @@ export const BINARY_VARIANTS: Record<string, BinaryVariant> = {
   'median + market w.75': (ps, m) => clip(m == null ? med(ps) : ilg(0.25 * lg(clip(med(ps), 0.001)) + 0.75 * lg(clip(m, 0.001))), 0.02),
 };
 
-export function replay(): { component: string; n: number; meanLog: number }[] {
+export function replay(statuses = ['submitted', 'dry_run']): { component: string; n: number; meanLog: number }[] {
   const d = db();
   const runs = d.prepare(`SELECT r.id, r.question, o.resolution FROM runs r JOIN outcomes o ON o.question_id = r.question_id
-    WHERE r.status IN ('submitted','dry_run')`).all() as any[];
+    WHERE r.status IN (${statuses.map(() => '?').join(',')})`).all(...statuses) as any[];
   const acc = new Map<string, number[]>();
   const add = (k: string, v: number | null) => { if (v == null) return; (acc.get(k) ?? acc.set(k, []).get(k)!).push(v); };
   for (const r of runs) {

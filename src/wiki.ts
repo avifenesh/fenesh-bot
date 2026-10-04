@@ -12,6 +12,7 @@ import { call, lastJson, type ToolSpec } from './llm.ts';
 import { log } from './log.ts';
 import type { Question } from './metaculus.ts';
 import { currentEventsDay } from './research/sources.ts';
+import { asOfMs } from './asof.ts';
 
 const root = () => `${config.dataDir}/wiki`;
 const slug = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
@@ -113,6 +114,6 @@ export function wikiTool(): ToolSpec {
     name: 'wiki',
     description: "The team's own notes: dated facts about entities collected from earlier research, and daily world digests. Search by keywords (names, places, indicators).",
     parameters: { type: 'object', properties: { keywords: { type: 'string' } }, required: ['keywords'] },
-    run: async ({ keywords }) => lookup(String(keywords)),
+    run: async ({ keywords }) => { const a = asOfMs(); return lookup(String(keywords), a == null ? undefined : new Date(a - 86_400_000).toISOString().slice(0, 10)); },
   };
 }

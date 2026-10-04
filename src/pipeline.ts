@@ -1,6 +1,7 @@
 // One question, end to end: plan, gather, research brief, forecasters, aggregation,
 // disagreement check, comment. Submission is the caller's job.
 
+import { asOfMs } from './asof.ts';
 import { config } from './config.ts';
 import { call, lastJson, type ToolSpec } from './llm.ts';
 import { log } from './log.ts';
@@ -50,8 +51,14 @@ export class Budget {
   left() { return this.cap - this.spent; }
 }
 
+// Tools that cannot answer as of a past date are left out of backtests. The wiki is out too: its
+// notes were written by live runs, so even facts dated before the as-of moment were chosen with
+// later knowledge.
+const LIVE_ONLY_TOOLS = new Set(['web_search', 'wiki']);
+
 function researchTools(): ToolSpec[] {
-  return [...SOURCES.flatMap((s) => s.tools()), wikiTool()];
+  const tools = [...SOURCES.flatMap((s) => s.tools()), wikiTool()];
+  return asOfMs() == null ? tools : tools.filter((t) => !LIVE_ONLY_TOOLS.has(t.name));
 }
 
 async function makePlan(q: Question, b: Budget): Promise<ResearchPlan> {
@@ -303,7 +310,11 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
       log.warn('supervisor failed', { q: q.questionId, err: e.message });
     }
   }
-  if (forecasts.filter((f) => f.ok).length < Math.min(2, models.length)) throw new Error('fewer than two forecasters succeeded');
+  const okCount = forecasts.filter((f) => f.ok).length;
+  const need = Math.min(2, models.length);
+  if (okCount < need) {
+    throw new Error(`${okCount} of ${models.length} forecasters produced a usable forecast (need ${need}): ${forecasts.filter((f) => !f.ok).map((f) => `${f.model}: ${f.error}`).join('; ')}`);
+  }
   const { payload, headline, marketWeight: mw } = aggregate(q, forecasts, market);
   const base = { plan, evidence, brief, round1, addendum, forecasts, payload, headline, costUsd: b.spent, disagreement: dis,
     market, marketWeight: mw, gut: g.pYes != null || g.probs ? { pYes: g.pYes, probs: g.probs } : undefined, baseRate: cls.baseRateText, shadow };

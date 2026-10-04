@@ -2,6 +2,7 @@
 // market selection, and a quick gut forecast that is logged (and only used once it earns it).
 
 import { readFileSync } from 'node:fs';
+import { asOfMs } from './asof.ts';
 import { config } from './config.ts';
 import { call, lastJson } from './llm.ts';
 import { log } from './log.ts';
@@ -10,9 +11,11 @@ import { questionBlock, today } from './prompts.ts';
 import { marketSearch, type MarketQuote } from './research/sources.ts';
 
 interface Rate { yes: number; n: number }
-const RATES = JSON.parse(readFileSync(new URL('./base-rates.json', import.meta.url), 'utf8')) as {
-  source: string; overall: Rate; byTemplate: Record<string, Rate>; byTopic: Record<string, Rate>;
-};
+type Rates = { source: string; overall: Rate; byTemplate: Record<string, Rate>; byTopic: Record<string, Rate> };
+const LIVE_RATES = JSON.parse(readFileSync(new URL('./base-rates.json', import.meta.url), 'utf8')) as Rates;
+// Backtests use rates from questions that resolved before the backtest window, so a question under
+// test never feeds its own prior.
+const BACKTEST_RATES = JSON.parse(readFileSync(new URL('./base-rates-spring.json', import.meta.url), 'utf8')) as Rates;
 
 const pct = (r: Rate) => `${Math.round((100 * r.yes) / r.n)}% (${r.yes} of ${r.n})`;
 
@@ -20,6 +23,7 @@ export interface Classification { template?: string; topic?: string; baseRateTex
 
 export async function classify(q: Question): Promise<Classification> {
   if (q.type !== 'binary') return { baseRateText: '' };
+  const RATES = asOfMs() == null ? LIVE_RATES : BACKTEST_RATES;
   const templates = Object.keys(RATES.byTemplate);
   const topics = Object.keys(RATES.byTopic);
   try {
@@ -42,7 +46,8 @@ Return only JSON: {"template": "<one template, verbatim>", "topic": "<one topic,
     return { template, topic, baseRateText: parts.join(' ') };
   } catch (e: any) {
     log.warn('classify failed', { q: q.questionId, err: e.message });
-    return { baseRateText: `Across ${RATES.overall.n} resolved yes/no questions in past Metaculus bot tournaments, ${pct(RATES.overall)} resolved Yes.` };
+    const R = asOfMs() == null ? LIVE_RATES : BACKTEST_RATES;
+    return { baseRateText: `Across ${R.overall.n} resolved yes/no questions in past Metaculus bot tournaments, ${pct(R.overall)} resolved Yes.` };
   }
 }
 
