@@ -284,10 +284,14 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
   const plan = await makePlan(q, b);
   const [evidence, cls, market] = await Promise.all([gather(q, plan), classify(q), matchMarket(q, plan.marketQueries)]);
   log.info('gathered', { q: q.questionId, items: evidence.length, market: market ? `${market.quote.venue} ${market.quote.probability} c=${market.confidence}` : null, bySource: Object.fromEntries(SOURCES.map((s) => [s.name, evidence.filter((e) => e.source === s.name).length])) });
+  const models = opts.forecasters ?? config.forecasters;
   const [brief, g] = await Promise.all([
     writeBrief(q, evidence, b),
-    // The no-research read the LAYA calibration was fitted on; archived as its own component.
-    layaForecast(q).catch((e: any) => { log.warn('laya gut failed', { q: q.questionId, err: e.message }); return null; }),
+    // The no-research read the LAYA calibration was fitted on, archived as its own component. Only
+    // when LAYA is in the run: backtests leave it out (see cli.ts).
+    models.some(isSystem1)
+      ? layaForecast(q).catch((e: any) => { log.warn('laya gut failed', { q: q.questionId, err: e.message }); return null; })
+      : Promise.resolve(null),
   ]);
 
   const priors = [
@@ -296,7 +300,6 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
   ].filter(Boolean).join('\n');
   const priorsBlock = priors ? `Priors:\n${priors}` : '';
 
-  const models = opts.forecasters ?? config.forecasters;
   const shadowModels = (process.env.FENESH_SHADOW_MODELS ?? '').split(',').map((x) => x.trim()).filter((x) => x && !models.includes(x));
   const [round1, shadow] = await Promise.all([
     Promise.all(models.map((m) => forecastOne(q, m, brief, priorsBlock, b))),
