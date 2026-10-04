@@ -18,7 +18,9 @@ const POLL = 'fenesh-poll';
 const QUESTION = 'fenesh-question';
 const EVALUATE = 'fenesh-evaluate';
 
-const leanForecasters = (process.env.FENESH_LEAN_FORECASTERS ?? 'gpt-6.1-sol,opus-5.5,laya').split(',');
+// No System 1 vote on the lean path: with three members, LAYA's near-base-rate vote would often be the
+// median itself. Lean runs still archive the LAYA gut read.
+const leanForecasters = (process.env.FENESH_LEAN_FORECASTERS ?? 'gpt-6.1-sol,opus-5.5,fable-5.1').split(',');
 const dailyBudget = Number(process.env.FENESH_DAILY_BUDGET_USD ?? 60);
 const safetyLeadMs = 25 * 60_000;
 
@@ -94,8 +96,9 @@ export async function processQuestion(job: Job): Promise<unknown> {
     return { skipped: 'closed' };
   }
   const overBudget = spentSince(new Date(Date.now() - 86_400_000).toISOString()) > dailyBudget;
-  const isMiniBench = q.tournaments.some((t) => /minibench/i.test(t));
-  const lean = d.lean || job.name === 'safety' || isMiniBench || overBudget || msToClose < 20 * 60_000;
+  // MiniBench runs the full path: it is the bench the system is tuned against, so it has to see the
+  // same ensemble the tournament gets.
+  const lean = d.lean || job.name === 'safety' || overBudget || msToClose < 20 * 60_000;
   if (overBudget) log.warn('daily budget exceeded, lean path', { budget: dailyBudget });
   try {
     const line = await forecastAndSubmit(q, lean ? { forecasters: leanForecasters, supervisor: false } : {});

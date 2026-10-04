@@ -36,7 +36,9 @@ can be scored when questions resolve.
   deterministic id (no double work), retries, and a delayed safety job that forecasts on a cheaper path
   25 minutes before close if nothing was submitted.
 - Earliest-closing questions run first.
-- A per-question cost cap and a daily budget; past the budget the bot uses the cheaper path.
+- A per-question cost cap and a daily budget; past the budget the bot uses the cheaper path (GPT-6.1 Sol,
+  Opus 5.5 and Fable 5.1, no supervisor, no System 1 vote). MiniBench gets the full path, since it is the
+  bench the system is tuned against.
 - Alerts go to a webhook (`FENESH_ALERT_WEBHOOK`) when a question fails or closes unforecast.
 
 ## Models

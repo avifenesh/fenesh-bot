@@ -44,11 +44,11 @@ chown -R root:fenesh /opt/fenesh-bot && chmod -R g+rX,o-rwx /opt/fenesh-bot
 if ! /usr/local/bin/uv --version 2>/dev/null | grep -q "uv ${UV_VERSION}"; then
   curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
 fi
-install -d -o root -g fenesh -m 0750 /opt/fenesh-laya
-install -d -o fenesh -g fenesh -m 0750 /var/lib/fenesh-bot/hf
+# The venv holds no secrets and must be readable by the sidecar's dynamic user.
+install -d -o root -g root -m 0755 /opt/fenesh-laya
 (cd /opt/fenesh-bot/sidecar && UV_PROJECT_ENVIRONMENT=/opt/fenesh-laya/venv UV_PYTHON_DOWNLOADS=never UV_PYTHON=/usr/bin/python3.12 \
   /usr/local/bin/uv sync --frozen --no-dev --no-install-project)
-chmod -R g+rX,o-rwx /opt/fenesh-laya
+chmod -R a+rX /opt/fenesh-laya
 
 # Swap as a cushion: the sidecar holds about 2 GB and the host may have only 4 GB.
 if ! swapon --show | grep -q /swapfile; then
@@ -60,6 +60,7 @@ install -m 0644 /opt/fenesh-bot/deploy/fenesh-laya.service /etc/systemd/system/f
 install -m 0644 /opt/fenesh-bot/deploy/fenesh-bot.service /etc/systemd/system/fenesh-bot.service
 systemctl daemon-reload
 if [ -f /etc/fenesh-bot/env ]; then
+  [ -f /etc/fenesh-bot/laya.env ] || { echo "missing /etc/fenesh-bot/laya.env (push.sh writes it)" >&2; exit 1; }
   systemctl enable fenesh-laya fenesh-bot
   systemctl restart fenesh-laya
   # First start downloads the pinned weights; wait for health before the worker starts asking.

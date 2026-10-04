@@ -287,9 +287,9 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
   const models = opts.forecasters ?? config.forecasters;
   const [brief, g] = await Promise.all([
     writeBrief(q, evidence, b),
-    // The no-research read the LAYA calibration was fitted on, archived as its own component. Only
-    // when LAYA is in the run: backtests leave it out (see cli.ts).
-    models.some(isSystem1)
+    // The no-research read the LAYA calibration was fitted on, archived as its own component. Live runs
+    // always log it (the lean path too); backtests only when LAYA is named (see cli.ts).
+    models.some(isSystem1) || asOfMs() == null
       ? layaForecast(q).catch((e: any) => { log.warn('laya gut failed', { q: q.questionId, err: e.message }); return null; })
       : Promise.resolve(null),
   ]);
