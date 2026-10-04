@@ -186,9 +186,11 @@ function median(xs: number[]): number {
   return k % 2 ? s[(k - 1) / 2] : (s[k / 2 - 1] + s[k / 2]) / 2;
 }
 
-// Disagreement on a 0..1-ish scale per type, used to decide whether the supervisor runs.
+// Disagreement on a 0..1-ish scale per type, used to decide whether the supervisor runs. Measured
+// over the frontier models only: the open-weight member votes in the aggregate, but its outliers
+// alone should not buy a supervisor round.
 function disagreement(q: Question, fs: ForecasterOutput[]): number {
-  const ok = fs.filter((f) => f.ok);
+  const ok = fs.filter((f) => f.ok && f.model !== config.fastModel);
   if (ok.length < 2) return 0;
   if (q.type === 'binary') {
     const l = ok.map((f) => logit(clamp(f.pYes!, 0.01)));

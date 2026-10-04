@@ -20,7 +20,7 @@ describe('evaluation', () => {
     const fs = (m: string, f: any) => ({ model: m, ok: true, costUsd: 0, ...f });
     const runs = [
       { q: q(1, 'binary'), payload: { probability_yes: 0.8 }, fs: [fs('a', { pYes: 0.9 }), fs('b', { pYes: 0.6 })], res: 'yes' },
-      { q: q(2, 'binary'), payload: { probability_yes: 0.3 }, fs: [fs('a', { pYes: 0.1 }), fs('b', { pYes: 0.5 })], res: 'no' },
+      { q: q(2, 'binary'), payload: { probability_yes: 0.3 }, fs: [fs('a', { pYes: 0.1 }), fs('b', { pYes: 0.5 }), fs('gpt-oss-120b', { pYes: 0.9 })], res: 'no' },
       { q: q(3, 'multiple_choice', { options: ['x', 'y'] }), payload: { probability_yes_per_category: { x: 0.7, y: 0.3 } },
         fs: [fs('a', { probs: { x: 0.8, y: 0.2 } }), fs('b', { probs: { x: 0.5, y: 0.5 } })], res: 'x' },
     ];
@@ -41,8 +41,11 @@ describe('evaluation', () => {
     const { replay } = await import('../src/evaluate.ts');
     const v = Object.fromEntries(replay().map((x) => [x.component, x]));
     expect(v['median clip.02 (live)'].n).toBe(2);
-    // median of {0.9, 0.6} = 0.75 on a Yes, median of {0.1, 0.5} = 0.3 on a No
-    expect(v['median clip.02 (live)'].meanLog).toBeCloseTo((Math.log(0.75) + Math.log(0.7)) / 2, 6);
+    // median of {0.9, 0.6} = 0.75 on a Yes, median of {0.1, 0.5, 0.9} = 0.5 on a No
+    expect(v['median clip.02 (live)'].meanLog).toBeCloseTo((Math.log(0.75) + Math.log(0.5)) / 2, 6);
     expect(v['mc mean (live)'].n).toBe(1);
+    // Only question 2 had the open model: with it the median is 0.5, without it 0.3.
+    expect(v['median without open model'].n).toBe(1);
+    expect(v['median without open model'].meanLog).toBeCloseTo(Math.log(0.7), 6);
   });
 });

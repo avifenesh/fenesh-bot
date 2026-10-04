@@ -15,8 +15,8 @@ aggregates them in code and posts the forecast with a comment explaining it.
 3. **Research brief.** GPT-6.1 Sol reads the gathered items and uses the same sources as tools to check the
    resolution source, verify key claims and find base rates. It writes a dated, sourced brief with no
    probability in it.
-4. **Forecast.** GPT-6 Astra, GPT-6.1 Sol, Claude Opus 5.5, Claude Fable 5.1 and Grok 4.7 forecast
-   independently from the brief at high reasoning effort.
+4. **Forecast.** GPT-6 Astra, GPT-6.1 Sol, Claude Opus 5.5, Claude Fable 5.1 and gpt-oss-120b forecast
+   independently from the brief at high reasoning effort (gpt-oss at medium).
 5. **Aggregate in code.** Yes/no: median, kept within 2-98%. Multiple choice: mean per option. Numeric,
    discrete and date: pointwise median of the models' CDFs, widened 15% around the median, then
    standardized to the Metaculus CDF rules.
@@ -38,9 +38,9 @@ can be scored when questions resolve.
 
 ## Models
 
-All models run on Amazon Bedrock with a bearer key: Claude and the open-weight models through
-Converse or the Mantle endpoint, GPT-6 models through Mantle's OpenAI-compatible Responses API, and Grok
-through Bedrock's chat-completions endpoint (the only one that takes the priority tier).
+All models run on Amazon Bedrock with a bearer key: Claude through the Converse API, GPT-6 models through
+Mantle's OpenAI-compatible Responses API (`/openai/v1/responses`), and gpt-oss-120b through Mantle's
+`/v1/responses`.
 
 ## Setup (first time on a machine)
 

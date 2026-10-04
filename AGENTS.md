@@ -10,8 +10,9 @@ Metaculus forecasting bot (bot user `fenesh-bot`, id 309777). TypeScript run dir
 - Model calls go through Bedrock with metered keys only. No consumer logins (Claude Max, SuperGrok,
   ChatGPT) in the bot's path. Claude ids use `global.anthropic.*`; OpenAI ids are plain `openai.*` on
   Mantle; never `us.` ids.
-- No X / xAI API source for now (owner decision 2026-10-04). Research sources plug into
-  `src/research/sources.ts`; add one there when the owner approves it.
+- No Grok model and no X / xAI API at all (owner decision 2026-10-04). The ensemble is GPT-6 Astra,
+  GPT-6.1 Sol, Opus 5.5, Fable 5.1 and gpt-oss-120b. Research sources plug into
+  `src/research/sources.ts`; add one there only when the owner approves it.
 - One forecast per question. Never resubmit a question unless the owner asks.
 - `--dry-run` for any manual test against live questions.
 - The repo is private until the owner says to open-source it; keep code and docs free of private research
