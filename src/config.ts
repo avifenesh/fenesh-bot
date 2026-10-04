@@ -13,6 +13,9 @@ export interface ModelSpec {
   // Last date the model may know about (training cutoff, from the providers' docs). Backtests only
   // use questions that open after the latest cutoff of the models in the run.
   cutoff: string;
+  // Open-weight model: votes in the aggregate but does not count toward the supervisor trigger, and
+  // replay scores the ensemble with and without it.
+  openWeight?: boolean;
   // USD per million tokens (reasoning tokens bill as output). Bedrock prices checked 2026-10-04:
   // global profiles at base rate, Mantle OpenAI ids at the in-region rate (+10%).
   price: { input: number; output: number };
@@ -40,7 +43,7 @@ export const MODELS: Record<string, ModelSpec> = {
   // The open-weight model: a voting member of the ensemble, and the fast steps (query writing,
   // classification, market matching, parse repair).
   'gpt-oss-120b': {
-    key: 'gpt-oss-120b', id: 'openai.gpt-oss-120b', transport: 'mantle-v1',
+    key: 'gpt-oss-120b', id: 'openai.gpt-oss-120b', transport: 'mantle-v1', openWeight: true,
     effort: 'medium', cutoff: '2024-06-30', maxTokens: 16000, price: { input: 0.15, output: 0.6 },
   },
 };
@@ -77,4 +80,8 @@ export function model(key: string): ModelSpec {
   const m = MODELS[key];
   if (!m) throw new Error(`unknown model ${key}`);
   return m;
+}
+
+export function isOpenWeight(key: string): boolean {
+  return MODELS[key]?.openWeight === true;
 }

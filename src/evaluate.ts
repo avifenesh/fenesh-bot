@@ -4,7 +4,7 @@
 // API reports it.
 
 import { DatabaseSync } from 'node:sqlite';
-import { config } from './config.ts';
+import { config, isOpenWeight } from './config.ts';
 import { log } from './log.ts';
 import { medianCdf as medianOf, rawCdf, standardize, widen as widenCdf, type Pct } from './numeric.ts';
 import type { Question } from './metaculus.ts';
@@ -148,7 +148,7 @@ export function replay(statuses = ['submitted', 'dry_run']): { component: string
     const finalComps = comps.filter((c) => c.round === finalRound);
     const members = finalComps.map((c) => JSON.parse(c.forecast));
     // The same ensemble without the open-weight model, to measure what that member adds.
-    const closed = finalComps.filter((c) => c.model !== 'gpt-oss-120b').map((c) => JSON.parse(c.forecast));
+    const closed = finalComps.filter((c) => !isOpenWeight(c.model)).map((c) => JSON.parse(c.forecast));
     const market = comps.find((c) => c.model === 'market');
     const gutC = comps.find((c) => c.model === 'system1-gut');
     if (!members.length) continue;
@@ -158,8 +158,12 @@ export function replay(statuses = ['submitted', 'dry_run']): { component: string
       const mk = market ? JSON.parse(market.forecast).pYes : null;
       for (const [name, f] of Object.entries(BINARY_VARIANTS)) add(name, logScore(q, { pYes: f(ps, mk) }, r.resolution));
       if (gutC) add('median + system1 member', logScore(q, { pYes: clip(med([...ps, JSON.parse(gutC.forecast).pYes]), 0.02) }, r.resolution));
+      // Paired comparison: both variants scored on exactly the questions where the open model answered.
       const psClosed = closed.map((m) => m.pYes).filter((p: unknown) => typeof p === 'number');
-      if (psClosed.length && psClosed.length < ps.length) add('median without open model', logScore(q, { pYes: clip(med(psClosed), 0.02) }, r.resolution));
+      if (psClosed.length && psClosed.length < ps.length) {
+        add('paired: median with open model', logScore(q, { pYes: clip(med(ps), 0.02) }, r.resolution));
+        add('paired: median without open model', logScore(q, { pYes: clip(med(psClosed), 0.02) }, r.resolution));
+      }
     } else if (q.type === 'multiple_choice') {
       const opts = q.options;
       const norm = (pr: Record<string, number>) => { const t = opts.reduce((a, o) => a + (pr[o] ?? 0), 0) || 1; return Object.fromEntries(opts.map((o) => [o, (pr[o] ?? 0) / t])); };
@@ -167,7 +171,10 @@ export function replay(statuses = ['submitted', 'dry_run']): { component: string
       add('mc mean (live)', logScore(q, { probs: Object.fromEntries(opts.map((o) => [o, Math.max(0.005, mean(ms.map((m) => m[o])))])) }, r.resolution));
       add('mc median', logScore(q, { probs: Object.fromEntries(opts.map((o) => [o, Math.max(0.005, med(ms.map((m) => m[o])))])) }, r.resolution));
       const mc = closed.map((m) => norm(m.probs ?? {}));
-      if (mc.length && mc.length < ms.length) add('mc mean without open model', logScore(q, { probs: Object.fromEntries(opts.map((o) => [o, Math.max(0.005, mean(mc.map((m) => m[o])))])) }, r.resolution));
+      if (mc.length && mc.length < ms.length) {
+        add('paired: mc mean with open model', logScore(q, { probs: Object.fromEntries(opts.map((o) => [o, Math.max(0.005, mean(ms.map((m) => m[o])))])) }, r.resolution));
+        add('paired: mc mean without open model', logScore(q, { probs: Object.fromEntries(opts.map((o) => [o, Math.max(0.005, mean(mc.map((m) => m[o])))])) }, r.resolution));
+      }
     } else if (q.scaling) {
       const cdfs = members.filter((m) => m.pcts?.length).map((m) => rawCdf(q.scaling!, m.pcts));
       if (!cdfs.length) continue;
@@ -176,7 +183,10 @@ export function replay(statuses = ['submitted', 'dry_run']): { component: string
       }
       add('numeric mean widen 1.15', logScore(q, { cdf: standardize(q.scaling, widenCdf(cdfs[0].map((_, i) => mean(cdfs.map((c) => c[i]))), 1.15)) }, r.resolution));
       const closedCdfs = closed.filter((m) => m.pcts?.length).map((m) => rawCdf(q.scaling!, m.pcts));
-      if (closedCdfs.length && closedCdfs.length < cdfs.length) add('numeric median widen 1.15 without open model', logScore(q, { cdf: standardize(q.scaling, widenCdf(medianOf(closedCdfs), 1.15)) }, r.resolution));
+      if (closedCdfs.length && closedCdfs.length < cdfs.length) {
+        add('paired: numeric median with open model', logScore(q, { cdf: standardize(q.scaling, widenCdf(medianOf(cdfs), 1.15)) }, r.resolution));
+        add('paired: numeric median without open model', logScore(q, { cdf: standardize(q.scaling, widenCdf(medianOf(closedCdfs), 1.15)) }, r.resolution));
+      }
     }
   }
   return [...acc.entries()].map(([component, v]) => ({ component, n: v.length, meanLog: mean(v) })).sort((a, b) => a.component.localeCompare(b.component));

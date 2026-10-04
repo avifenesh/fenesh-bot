@@ -2,7 +2,7 @@
 // disagreement check, comment. Submission is the caller's job.
 
 import { asOfMs } from './asof.ts';
-import { config } from './config.ts';
+import { config, isOpenWeight } from './config.ts';
 import { call, lastJson, type ToolSpec } from './llm.ts';
 import { log } from './log.ts';
 import type { ForecastPayload, Question } from './metaculus.ts';
@@ -190,7 +190,7 @@ function median(xs: number[]): number {
 // over the frontier models only: the open-weight member votes in the aggregate, but its outliers
 // alone should not buy a supervisor round.
 function disagreement(q: Question, fs: ForecasterOutput[]): number {
-  const ok = fs.filter((f) => f.ok && f.model !== config.fastModel);
+  const ok = fs.filter((f) => f.ok && !isOpenWeight(f.model));
   if (ok.length < 2) return 0;
   if (q.type === 'binary') {
     const l = ok.map((f) => logit(clamp(f.pYes!, 0.01)));

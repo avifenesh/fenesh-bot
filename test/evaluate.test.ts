@@ -44,8 +44,10 @@ describe('evaluation', () => {
     // median of {0.9, 0.6} = 0.75 on a Yes, median of {0.1, 0.5, 0.9} = 0.5 on a No
     expect(v['median clip.02 (live)'].meanLog).toBeCloseTo((Math.log(0.75) + Math.log(0.5)) / 2, 6);
     expect(v['mc mean (live)'].n).toBe(1);
-    // Only question 2 had the open model: with it the median is 0.5, without it 0.3.
-    expect(v['median without open model'].n).toBe(1);
-    expect(v['median without open model'].meanLog).toBeCloseTo(Math.log(0.7), 6);
+    // Only question 2 had the open model: both paired variants cover exactly that question.
+    expect(v['paired: median with open model'].n).toBe(1);
+    expect(v['paired: median without open model'].n).toBe(1);
+    expect(v['paired: median with open model'].meanLog).toBeCloseTo(Math.log(0.5), 6);
+    expect(v['paired: median without open model'].meanLog).toBeCloseTo(Math.log(0.7), 6);
   });
 });
