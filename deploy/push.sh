@@ -15,7 +15,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 git archive --format=tar.gz -o "$TMP/fenesh-bot-$REV.tar.gz" HEAD
 umask 077
-LAYA_KEY=$(grep -h '^LAYA_API_KEY=' "${ENV_FILE:-/dev/null}" 2>/dev/null | cut -d= -f2- || true)
+LAYA_KEY=$(grep -h '^LAYA_API_KEY=' "${ENV_FILE:-/dev/null}" 2>/dev/null | tail -1 | cut -d= -f2- || true)
 LAYA_KEY=${LAYA_KEY:-$(openssl rand -hex 24)}
 echo "LAYA_API_KEY=$LAYA_KEY" > "$TMP/laya.env"
 if [ -z "$ENV_FILE" ]; then
@@ -30,9 +30,11 @@ if [ -z "$ENV_FILE" ]; then
     grep -hv '^\s*#' .env.example | grep -E '^FENESH_' || true
   } > "$ENV_FILE"
 fi
-if ! grep -q '^LAYA_API_KEY=' "$ENV_FILE"; then
-  # A given env file without the sidecar key: ship a copy with the key added.
-  cp "$ENV_FILE" "$TMP/env.given" && echo "LAYA_API_KEY=$LAYA_KEY" >> "$TMP/env.given" && ENV_FILE="$TMP/env.given"
+if [ "$(grep -h '^LAYA_API_KEY=' "$ENV_FILE" | tail -1 | cut -d= -f2-)" != "$LAYA_KEY" ]; then
+  # A given env file with no or an empty sidecar key: ship a copy carrying the same key as laya.env.
+  grep -v '^LAYA_API_KEY=' "$ENV_FILE" > "$TMP/env.given" || true
+  echo "LAYA_API_KEY=$LAYA_KEY" >> "$TMP/env.given"
+  ENV_FILE="$TMP/env.given"
 fi
 SSH="/usr/bin/ssh -o BatchMode=yes"
 /usr/bin/scp -q "$TMP/fenesh-bot-$REV.tar.gz" deploy/install.sh "$HOST:/root/"
