@@ -51,8 +51,10 @@ export class Budget {
   left() { return this.cap - this.spent; }
 }
 
-// Tools that cannot answer as of a past date are left out of backtests.
-const LIVE_ONLY_TOOLS = new Set(['web_search']);
+// Tools that cannot answer as of a past date are left out of backtests. The wiki is out too: its
+// notes were written by live runs, so even facts dated before the as-of moment were chosen with
+// later knowledge.
+const LIVE_ONLY_TOOLS = new Set(['web_search', 'wiki']);
 
 function researchTools(): ToolSpec[] {
   const tools = [...SOURCES.flatMap((s) => s.tools()), wikiTool()];

@@ -25,7 +25,15 @@ export function loadCensus(path: string): BacktestItem[] {
   for (const r of rows) {
     const post = r.embed_post;
     if (!post || r.record?.practice) continue;
-    for (const q of questionsFromPost({ ...post, question: post.question ? { ...post.question, status: 'open' } : undefined, group_of_questions: post.group_of_questions })) {
+    // Resolved questions are loaded as if open (the as-of moment is inside their open window).
+    const asOpen = {
+      ...post,
+      question: post.question ? { ...post.question, status: 'open' } : undefined,
+      group_of_questions: post.group_of_questions
+        ? { ...post.group_of_questions, questions: post.group_of_questions.questions.map((x: any) => ({ ...x, status: 'open' })) }
+        : undefined,
+    };
+    for (const q of questionsFromPost(asOpen)) {
       const raw = post.question?.id === q.questionId ? post.question : post.group_of_questions?.questions?.find((x: any) => x.id === q.questionId);
       const res = raw?.resolution;
       if (res == null || res === '' || res === 'annulled' || res === 'ambiguous') continue;

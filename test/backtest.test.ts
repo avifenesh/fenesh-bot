@@ -31,13 +31,19 @@ describe('backtest', () => {
       post(3, '2026-08-20T00:00:00Z', 'yes'),
       post(4, '2026-09-20T00:00:00Z', null), // unresolved
       post(5, '2026-09-25T00:00:00Z', 'annulled'),
+      { record: { tournament_key: 'mbtest', practice: false }, embed_post: { id: 6, title: 'group', open_time: '2026-08-02T00:00:00Z',
+        group_of_questions: { questions: [
+          { id: 1601, type: 'binary', label: 'A', status: 'resolved', open_time: '2026-08-02T00:00:00Z', scheduled_close_time: '2026-08-02T00:00:00Z', scheduled_resolve_time: '2026-08-02T00:00:00Z', resolution: 'no', scaling: {} },
+          { id: 1602, type: 'binary', label: 'B', status: 'resolved', open_time: '2026-08-02T00:00:00Z', scheduled_close_time: '2026-08-02T00:00:00Z', scheduled_resolve_time: '2026-08-02T00:00:00Z', resolution: 'yes', scaling: {} },
+        ] } } },
     ]));
     const { loadCensus, selectItems } = await import('../src/backtest.ts');
     const items = loadCensus(file);
-    expect(items.map((i) => i.question.questionId).sort()).toEqual([1001, 1002, 1003]);
+    expect(items.map((i) => i.question.questionId).sort()).toEqual([1001, 1002, 1003, 1601, 1602]);
+    expect(items.find((i) => i.question.questionId === 1602)!.resolution).toBe('yes');
     expect(items.find((i) => i.question.questionId === 1002)!.asOf).toBe('2026-07-20T00:20:00.000Z');
     const claude = selectItems(items, { models: ['opus-5.5', 'gpt-6-sol'], n: 10 });
-    expect(claude.map((i) => i.question.questionId).sort()).toEqual([1002, 1003]);
+    expect(claude.map((i) => i.question.questionId).sort()).toEqual([1002, 1003, 1601, 1602]);
     const withGrok = selectItems(items, { models: ['opus-5.5', 'grok-4.7'], n: 10 });
     expect(withGrok).toEqual([]);
   });
