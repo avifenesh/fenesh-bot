@@ -2,14 +2,15 @@
 // disagreement check, comment. Submission is the caller's job.
 
 import { asOfMs } from './asof.ts';
-import { config, isOpenWeight } from './config.ts';
-import { call, lastJson, type ToolSpec } from './llm.ts';
+import { config, isSystem1, model } from './config.ts';
+import { layaForecast } from './laya.ts';
+import { call, fast, lastJson, type ToolSpec } from './llm.ts';
 import { log } from './log.ts';
 import type { ForecastPayload, Question } from './metaculus.ts';
 import { checkCdf, medianCdf, quantilesOf, rawCdf, standardize, widen, type Pct } from './numeric.ts';
 import { forecastPrompt, planPrompt, researchPrompt, supervisorPrompt } from './prompts.ts';
 import { SOURCES, type Evidence, type ResearchPlan } from './research/sources.ts';
-import { classify, gut, matchMarket, type MarketMatch } from './system1.ts';
+import { classify, matchMarket, type MarketMatch } from './priors.ts';
 import { wikiTool } from './wiki.ts';
 
 export interface ForecasterOutput {
@@ -35,7 +36,7 @@ export interface RunResult {
   headline: string; // human summary of the final forecast
   market: MarketMatch | null; // exact-match market, if one was found
   marketWeight: number; // weight the market got in the binary aggregate
-  gut?: { pYes?: number; probs?: Record<string, number> }; // fast forecast with no research, logged only
+  gut?: { pYes?: number; probs?: Record<string, number>; pcts?: Pct[]; raw?: unknown }; // LAYA with no research, logged only
   baseRate?: string;
   shadow: ForecasterOutput[]; // extra models on the same brief, archived and scored, never submitted
   comment: string;
@@ -64,7 +65,7 @@ function researchTools(): ToolSpec[] {
 async function makePlan(q: Question, b: Budget): Promise<ResearchPlan> {
   const fallback: ResearchPlan = { queries: [q.title], wikiTitles: [], marketQueries: [q.title.slice(0, 80)], series: [] };
   try {
-    const r = await call(config.fastModel, planPrompt(q), { label: 'plan', maxTokens: 4000 });
+    const r = await fast(planPrompt(q), { label: 'plan', maxTokens: 4000 });
     b.add(r.usage.costUsd);
     const j = lastJson(r.text);
     return {
@@ -158,13 +159,17 @@ function parseForecast(q: Question, j: any): Pick<ForecasterOutput, 'pYes' | 'pr
 async function forecastOne(q: Question, modelKey: string, brief: string, extra: string, b: Budget): Promise<ForecasterOutput> {
   let costUsd = 0;
   try {
+    if (model(modelKey).transport === 'laya') {
+      const { raw, ...f } = await layaForecast(q, brief, extra);
+      return { model: modelKey, ok: true, costUsd: 0, reasoning: JSON.stringify(raw), ...f };
+    }
     const r = await call(modelKey, forecastPrompt(q, brief, extra), { label: 'forecast' });
     costUsd += r.usage.costUsd;
     let parsed;
     try { parsed = parseForecast(q, lastJson(r.text)); }
     catch {
       // Let the fast model pull the answer out of the reasoning.
-      const fix = await call(config.fastModel, `Extract the final forecast from this text as the JSON object it was asked to end with. Return only the JSON.\n\n${r.text.slice(-12000)}`, { label: 'repair', maxTokens: 3000 });
+      const fix = await fast(`Extract the final forecast from this text as the JSON object it was asked to end with. Return only the JSON.\n\n${r.text.slice(-12000)}`, { label: 'repair', maxTokens: 3000 });
       costUsd += fix.usage.costUsd;
       parsed = parseForecast(q, lastJson(fix.text));
     }
@@ -187,10 +192,10 @@ function median(xs: number[]): number {
 }
 
 // Disagreement on a 0..1-ish scale per type, used to decide whether the supervisor runs. Measured
-// over the frontier models only: the open-weight member votes in the aggregate, but its outliers
+// over the reasoning models only: the System 1 member votes in the aggregate, but its outliers
 // alone should not buy a supervisor round.
 function disagreement(q: Question, fs: ForecasterOutput[]): number {
-  const ok = fs.filter((f) => f.ok && !isOpenWeight(f.model));
+  const ok = fs.filter((f) => f.ok && !isSystem1(f.model));
   if (ok.length < 2) return 0;
   if (q.type === 'binary') {
     const l = ok.map((f) => logit(clamp(f.pYes!, 0.01)));
@@ -279,8 +284,15 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
   const plan = await makePlan(q, b);
   const [evidence, cls, market] = await Promise.all([gather(q, plan), classify(q), matchMarket(q, plan.marketQueries)]);
   log.info('gathered', { q: q.questionId, items: evidence.length, market: market ? `${market.quote.venue} ${market.quote.probability} c=${market.confidence}` : null, bySource: Object.fromEntries(SOURCES.map((s) => [s.name, evidence.filter((e) => e.source === s.name).length])) });
-  const [brief, g] = await Promise.all([writeBrief(q, evidence, b), gut(q, cls.baseRateText)]);
-  b.add(g.costUsd);
+  const models = opts.forecasters ?? config.forecasters;
+  const [brief, g] = await Promise.all([
+    writeBrief(q, evidence, b),
+    // The no-research read the LAYA calibration was fitted on, archived as its own component. Live runs
+    // always log it (the lean path too); backtests only when LAYA is named (see cli.ts).
+    models.some(isSystem1) || asOfMs() == null
+      ? layaForecast(q).catch((e: any) => { log.warn('laya gut failed', { q: q.questionId, err: e.message }); return null; })
+      : Promise.resolve(null),
+  ]);
 
   const priors = [
     cls.baseRateText,
@@ -288,7 +300,6 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
   ].filter(Boolean).join('\n');
   const priorsBlock = priors ? `Priors:\n${priors}` : '';
 
-  const models = opts.forecasters ?? config.forecasters;
   const shadowModels = (process.env.FENESH_SHADOW_MODELS ?? '').split(',').map((x) => x.trim()).filter((x) => x && !models.includes(x));
   const [round1, shadow] = await Promise.all([
     Promise.all(models.map((m) => forecastOne(q, m, brief, priorsBlock, b))),
@@ -305,6 +316,7 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
         label: 'supervisor', tools: researchTools(), maxToolRounds: 10, maxTokens: 20000,
       });
       b.add(sv.usage.costUsd);
+      if (sv.text.trim().length < 100) throw new Error('supervisor returned no addendum');
       addendum = sv.text.trim();
       const round2 = await Promise.all(models.map((m) => forecastOne(q, m, brief, `${priorsBlock}\n\nAddendum from the supervisor, who checked the points the team disagreed on:\n${addendum}`, b)));
       if (round2.filter((f) => f.ok).length >= Math.min(3, models.length)) forecasts = round2;
@@ -319,6 +331,6 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
   }
   const { payload, headline, marketWeight: mw } = aggregate(q, forecasts, market);
   const base = { plan, evidence, brief, round1, addendum, forecasts, payload, headline, costUsd: b.spent, disagreement: dis,
-    market, marketWeight: mw, gut: g.pYes != null || g.probs ? { pYes: g.pYes, probs: g.probs } : undefined, baseRate: cls.baseRateText, shadow };
+    market, marketWeight: mw, gut: g ? { pYes: g.pYes, probs: g.probs, pcts: g.pcts, raw: g.raw } : undefined, baseRate: cls.baseRateText, shadow };
   return { ...base, comment: buildComment(q, base) };
 }

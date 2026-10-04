@@ -1,0 +1,45 @@
+{
+  "fitted": "2026-10-04 by sidecar/calibrate.py on zero-shot LAYA answers to resolved Metaculus bot-tournament questions (spring and summer 2026, data/census), question and background only, no research brief",
+  "model": "convaiinnovations/laya, multilingual checkpoint, revision 7b928d828b7b0e022f929d9bd2e44165aa270148 (laya 0.3.26)",
+  "binary": {
+    "a": 0.112,
+    "b": -0.8439
+  },
+  "threshold": {
+    "a": 0.0819,
+    "b": 0.372,
+    "c": 1.5825
+  },
+  "choice": {
+    "t": 2,
+    "mix": 0.75
+  },
+  "metrics": {
+    "binary": {
+      "n": 539,
+      "yes_rate": 0.334,
+      "auc_noul": 0.56,
+      "auc_choice_yes_first": 0.509,
+      "auc_choice_no_first": 0.502,
+      "logloss_raw": 1.2727,
+      "cv_logloss_calibrated": 0.6378,
+      "cv_logloss_base_rate": 0.6416
+    },
+    "threshold": {
+      "questions": 356,
+      "n": 1780,
+      "auc_raw": 0.526,
+      "logloss_raw": 1.056,
+      "cv_logloss_calibrated": 0.3942,
+      "cv_logloss_location_only": 0.3953
+    },
+    "choice": {
+      "n": 107,
+      "top1_accuracy": 0.215,
+      "chance_top1": 0.23,
+      "nll_raw": 1.7536,
+      "cv_nll_calibrated": 1.5147,
+      "nll_uniform": 1.51
+    }
+  }
+}

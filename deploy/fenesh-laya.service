@@ -1,0 +1,40 @@
+[Unit]
+Description=fenesh-bot LAYA sidecar (laya-serve, System 1 vote, loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Third-party code that downloads weights: its own throwaway user and only its own key. It cannot read
+# /etc/fenesh-bot/env (Metaculus, Bedrock, AskNews) or the bot's data.
+DynamicUser=yes
+StateDirectory=fenesh-laya
+EnvironmentFile=/etc/fenesh-bot/laya.env
+InaccessiblePaths=/etc/fenesh-bot/env /var/lib/fenesh-bot
+Environment=LAYA_HOST=127.0.0.1
+Environment=LAYA_PORT=8790
+Environment=LAYA_DEVICE=cpu
+Environment=LAYA_MODELS=multilingual
+Environment=LAYA_DEFAULT_MODEL=multilingual
+Environment=LAYA_MAX_LOADED=1
+Environment=LAYA_PRELOAD=1
+Environment=LAYA_THREADS=2
+Environment=LAYA_MAX_CONCURRENT=2
+Environment=LAYA_MAX_TOKEN_BUDGET=4096
+# The multilingual checkpoint lives in the convaiinnovations/laya bundle. Pinned to the commit
+# src/laya-calibration.json was fitted on; change both together.
+Environment=LAYA_REVISION=7b928d828b7b0e022f929d9bd2e44165aa270148
+Environment=HF_HOME=/var/lib/fenesh-laya/hf
+Environment=USE_TF=0
+ExecStart=/opt/fenesh-laya/venv/bin/laya-serve
+Restart=always
+RestartSec=15
+Nice=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+MemoryMax=2800M
+
+[Install]
+WantedBy=multi-user.target

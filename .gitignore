@@ -5,3 +5,5 @@ data/
 !.env.example
 *.db
 *.db-*
+sidecar/.venv/
+__pycache__/

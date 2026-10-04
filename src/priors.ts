@@ -1,13 +1,12 @@
-// Fast steps on the open-weight model: question classification for base rates, exact-match
-// market selection, and a quick gut forecast that is logged (and only used once it earns it).
+// Priors for the forecasters, built on the fast model: the question's base-rate class and an
+// exact-match prediction market.
 
 import { readFileSync } from 'node:fs';
 import { asOfMs } from './asof.ts';
-import { config } from './config.ts';
-import { call, lastJson } from './llm.ts';
+import { fast, lastJson } from './llm.ts';
 import { log } from './log.ts';
 import type { Question } from './metaculus.ts';
-import { questionBlock, today } from './prompts.ts';
+import { today } from './prompts.ts';
 import { marketSearch, type MarketQuote } from './research/sources.ts';
 
 interface Rate { yes: number; n: number }
@@ -27,7 +26,7 @@ export async function classify(q: Question): Promise<Classification> {
   const templates = Object.keys(RATES.byTemplate);
   const topics = Object.keys(RATES.byTopic);
   try {
-    const r = await call(config.fastModel, `Classify this forecasting question.
+    const r = await fast(`Classify this forecasting question.
 
 ${q.title}
 ${q.resolutionCriteria.slice(0, 1500)}
@@ -66,7 +65,7 @@ export async function matchMarket(q: Question, queries: string[]): Promise<Marke
   if (!quotes.length) return null;
   const shuffled = quotes.map((m) => ({ m, k: Math.random() })).sort((a, b) => a.k - b.k).map((x) => x.m).slice(0, 25);
   try {
-    const r = await call(config.fastModel, `Today is ${today()}. Does any of these prediction markets resolve on exactly the same event as the question, with the same threshold and essentially the same deadline? Be strict: a related market, a different deadline, a different threshold or a broader/narrower event is NOT a match.
+    const r = await fast(`Today is ${today()}. Does any of these prediction markets resolve on exactly the same event as the question, with the same threshold and essentially the same deadline? Be strict: a related market, a different deadline, a different threshold or a broader/narrower event is NOT a match.
 
 Question: ${q.title}
 Closes for forecasting ${q.closeTime.slice(0, 10)}, resolves ${q.resolveTime.slice(0, 10)}.
@@ -89,28 +88,5 @@ Return only JSON: {"choice": <number>, "confidence": <0-1>, "same_direction": <t
   } catch (e: any) {
     log.warn('market match failed', { q: q.questionId, err: e.message });
     return null;
-  }
-}
-
-// Gut forecast from the question and base rate alone, no research. Logged as a component.
-export async function gut(q: Question, baseRate: string): Promise<{ pYes?: number; probs?: Record<string, number>; costUsd: number }> {
-  if (q.type !== 'binary' && q.type !== 'multiple_choice') return { costUsd: 0 };
-  try {
-    const r = await call(config.fastModel, `Today is ${today()}. Give a quick forecast from what you already know; do not overthink.
-
-${questionBlock(q)}
-
-${baseRate}
-
-Return only JSON: ${q.type === 'binary' ? '{"p_yes": <0-1>}' : `{"probabilities": {${q.options.map((o) => `"${o}": <p>`).join(', ')}}}`}`, { label: 'gut', effort: 'low', maxTokens: 3000 });
-    const j = lastJson(r.text);
-    if (q.type === 'binary') {
-      const p = Number(j.p_yes);
-      return Number.isFinite(p) && p >= 0 && p <= 1 ? { pYes: p, costUsd: r.usage.costUsd } : { costUsd: r.usage.costUsd };
-    }
-    return { probs: j.probabilities, costUsd: r.usage.costUsd };
-  } catch (e: any) {
-    log.warn('gut failed', { q: q.questionId, err: e.message });
-    return { costUsd: 0 };
   }
 }

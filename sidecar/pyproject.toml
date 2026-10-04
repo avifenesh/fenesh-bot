@@ -1,0 +1,17 @@
+[project]
+name = "fenesh-laya"
+version = "0.1.0"
+description = "LAYA System 1 decision model served on loopback for fenesh-bot"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "laya[serve]==0.3.26",
+  "torch>=2.8",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

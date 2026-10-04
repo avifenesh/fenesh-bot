@@ -1,6 +1,6 @@
 [Unit]
 Description=fenesh-bot Metaculus forecasting bot (glide-mq worker)
-After=network-online.target valkey-server.service
+After=network-online.target valkey-server.service fenesh-laya.service
 Wants=network-online.target
 Requires=valkey-server.service
 

@@ -80,7 +80,7 @@ export function finishRun(id: number, status: string, r?: RunResult, error?: str
   };
   // Round 0: components that are logged for evaluation but may not be in the aggregate.
   if (r.market) ins.run(id, 0, 'market', 1, JSON.stringify({ pYes: r.market.quote.probability }), `${r.market.quote.venue}: ${r.market.quote.question} (confidence ${r.market.confidence}, weight ${r.marketWeight})`, 0, null, null);
-  if (r.gut) ins.run(id, 0, 'system1-gut', 1, JSON.stringify(r.gut), null, 0, null, null);
+  if (r.gut) ins.run(id, 0, 'laya-gut', 1, JSON.stringify(r.gut), null, 0, null, null);
   put(1, r.round1);
   if (r.addendum) put(2, r.forecasts);
   if (r.shadow?.length) put(9, r.shadow); // shadow models: scored, never submitted

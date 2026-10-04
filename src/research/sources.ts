@@ -81,6 +81,55 @@ const gdelt: ResearchSource = {
   }],
 };
 
+// ---------- AskNews (keyed; news with summaries, historical search for backtests) ----------
+
+// Searches cost credits, so a daily cap guards the wallet (FENESH_ASKNEWS_DAILY, default 80).
+let askDay = '', askUsed = 0;
+
+async function askNewsSearch(query: string, n = 8, days = 30): Promise<Evidence[]> {
+  const key = process.env.ASKNEWS_API_KEY;
+  if (!key) throw new Error('asknews: no ASKNEWS_API_KEY');
+  cooling('asknews');
+  const day = new Date().toISOString().slice(0, 10);
+  if (day !== askDay) { askDay = day; askUsed = 0; }
+  if (askUsed >= Number(process.env.FENESH_ASKNEWS_DAILY ?? 80)) throw new Error('asknews: daily search cap reached');
+  askUsed++;
+  const u = new URL('https://api.asknews.app/v1/news/search');
+  const params: Record<string, string> = { query, n_articles: String(n), return_type: 'dicts', method: 'nl' };
+  const asOf = asOfMs();
+  if (asOf == null) params.hours_back = String(days * 24);
+  else Object.assign(params, { historical: 'true', start_timestamp: String(Math.floor((asOf - days * 86_400_000) / 1000)), end_timestamp: String(Math.floor(asOf / 1000)) });
+  u.search = new URLSearchParams(params).toString();
+  const r = await get(u.toString(), { headers: { Authorization: `Bearer ${key}` }, timeoutMs: 60_000 });
+  if (r.status === 429) { cool('asknews'); throw new Error('asknews HTTP 429'); }
+  if (r.status >= 400) throw new Error(`asknews HTTP ${r.status}: ${r.text.slice(0, 200)}`);
+  const d = JSON.parse(r.text);
+  return (d.as_dicts ?? [])
+    // Never let an article from after the as-of moment into a backtest.
+    .filter((a: any) => asOf == null || Date.parse(a.pub_date) <= asOf)
+    .map((a: any) => ({
+      source: 'asknews', title: a.eng_title || a.title, url: a.article_url,
+      published: typeof a.pub_date === 'string' ? a.pub_date.slice(0, 10) : undefined,
+      snippet: `${a.source_id ?? ''}: ${a.summary ?? ''}`.slice(0, 1500),
+    }));
+}
+
+const asknews: ResearchSource = {
+  name: 'asknews',
+  async gather(_q, plan) {
+    if (!process.env.ASKNEWS_API_KEY) return [];
+    const res = await Promise.allSettled(plan.queries.slice(0, 2).map((q) => askNewsSearch(q, 8)));
+    res.forEach((r) => { if (r.status === 'rejected') log.warn('asknews', { err: r.reason?.message }); });
+    return res.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+  },
+  tools: () => (process.env.ASKNEWS_API_KEY ? [{
+    name: 'asknews_search',
+    description: 'Search recent news (AskNews). Returns titles, URLs, dates and a summary of each article. Each search costs credits: use it for the decisive facts, not for browsing.',
+    parameters: { type: 'object', properties: { query: { type: 'string', description: 'a natural-language question or topic' }, days: { type: 'integer', description: 'look-back window, 1-90' } }, required: ['query'] },
+    run: async ({ query, days }: any) => fmt(await askNewsSearch(query, 8, Math.min(90, Math.max(1, days ?? 30))), true),
+  }] : []),
+};
+
 // ---------- Exa web search through its hosted MCP endpoint ----------
 
 async function exaSearch(query: string, n = 8): Promise<Evidence[]> {
@@ -505,7 +554,7 @@ const currentEventsSource: ResearchSource = {
   }],
 };
 
-export const SOURCES: ResearchSource[] = [exa, gdelt, currentEventsSource, wikipedia, markets, resolution, series];
+export const SOURCES: ResearchSource[] = [exa, asknews, gdelt, currentEventsSource, wikipedia, markets, resolution, series];
 
 export function fmt(items: Evidence[], withSnippet = false): string {
   if (!items.length) return 'no results';

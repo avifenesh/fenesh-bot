@@ -7,16 +7,19 @@ aggregates them in code and posts the forecast with a comment explaining it.
 
 ## How a question is forecast
 
-1. **Plan.** An open-weight model (gpt-oss-120b) writes search queries, Wikipedia titles, prediction-market
-   queries and data series to pull.
-2. **Gather.** Every research source runs in parallel: web search, news, Wikipedia, Polymarket and Manifold
-   prices, the pages named in the resolution criteria, and FRED / CoinGecko / Yahoo Finance series with
-   summary statistics.
+1. **Plan.** GPT-6.1 Sol at low effort writes search queries, Wikipedia titles, prediction-market queries and
+   data series to pull.
+2. **Gather.** Every research source runs in parallel: web search, news (AskNews, GDELT, Wikipedia Current
+   Events), Wikipedia, Polymarket and Manifold prices, the pages named in the resolution criteria, and
+   FRED / CoinGecko / Yahoo Finance series with summary statistics.
 3. **Research brief.** GPT-6.1 Sol reads the gathered items and uses the same sources as tools to check the
    resolution source, verify key claims and find base rates. It writes a dated, sourced brief with no
    probability in it.
-4. **Forecast.** GPT-6 Astra, GPT-6.1 Sol, Claude Opus 5.5, Claude Fable 5.1 and gpt-oss-120b forecast
-   independently from the brief at high reasoning effort (gpt-oss at medium).
+4. **Forecast.** Four reasoning models (GPT-6 Astra, GPT-6.1 Sol, Claude Opus 5.5, Claude Fable 5.1)
+   forecast independently from the brief at high reasoning effort. The System 1 member is
+   [LAYA](https://huggingface.co/convaiinnovations/laya), a non-generative decision model that answers
+   in one forward pass with no reasoning (see below). It votes in the aggregate but does not count toward
+   the disagreement trigger.
 5. **Aggregate in code.** Yes/no: median, kept within 2-98%. Multiple choice: mean per option. Numeric,
    discrete and date: pointwise median of the models' CDFs, widened 15% around the median, then
    standardized to the Metaculus CDF rules.
@@ -33,14 +36,37 @@ can be scored when questions resolve.
   deterministic id (no double work), retries, and a delayed safety job that forecasts on a cheaper path
   25 minutes before close if nothing was submitted.
 - Earliest-closing questions run first.
-- A per-question cost cap and a daily budget; past the budget the bot uses the cheaper path.
+- A per-question cost cap and a daily budget; past the budget the bot uses the cheaper path (GPT-6.1 Sol,
+  Opus 5.5 and Fable 5.1, no supervisor, no System 1 vote). MiniBench gets the full path, since it is the
+  bench the system is tuned against.
 - Alerts go to a webhook (`FENESH_ALERT_WEBHOOK`) when a question fails or closes unforecast.
 
 ## Models
 
-All models run on Amazon Bedrock with a bearer key: Claude through the Converse API, GPT-6 models through
-Mantle's OpenAI-compatible Responses API (`/openai/v1/responses`), and gpt-oss-120b through Mantle's
-`/v1/responses`.
+All models run on Amazon Bedrock with a bearer key:
+
+| Model | Bedrock id | API |
+|---|---|---|
+| Claude Opus 5.5, Fable 5.1 | `global.anthropic.claude-opus-5-5`, `global.anthropic.claude-fable-5-1` | Converse, adaptive thinking |
+| GPT-6 Astra | `openai.gpt-6-astra` | Mantle Responses (`/openai/v1/responses`) |
+| GPT-6.1 Sol | `global.openai.gpt-6.1-sol` | bedrock-runtime Responses (`/openai/v1/responses`) |
+
+GPT-6.1 Sol is an exception to the plain `openai.*` id rule: it only runs as the global inference
+profile on bedrock-runtime, where the bare id is refused with "on-demand throughput isn't supported".
+
+## System 1: LAYA
+
+LAYA runs on CPU next to the bot as a loopback `laya-serve` sidecar (`sidecar/`, `deploy/fenesh-laya.service`),
+pinned to one checkpoint revision. It reads the question, the priors and as much of the brief as fits
+in 4,096 tokens, and answers typed questions: `noul` for yes/no, both option orders for multiple choice,
+and "at most v" at five points of the range for numeric, discrete and date questions. A second, no-research
+LAYA read is archived as `laya-gut` for scoring.
+
+Zero-shot LAYA has no signal on these questions: on the resolved questions of past bot tournaments
+(`sidecar/census_eval.py`) its raw yes/no answers score worse than the base rate. Every answer therefore goes
+through a calibration fitted on those questions (`sidecar/calibrate.py` writes `src/laya-calibration.json`,
+including cross-validated metrics). A calibration with no signal is flat, so LAYA votes the base rate; a
+refit on resolved live questions or a fine-tuned checkpoint changes its weight without code changes.
 
 ## Setup (first time on a machine)
 
@@ -48,10 +74,18 @@ Node 24 or newer runs the TypeScript directly; there is no build step.
 
 ```bash
 npm ci
-cp .env.example .env   # fill in METACULUS_TOKEN and AWS_BEARER_TOKEN_BEDROCK
+cp .env.example .env   # fill in METACULUS_TOKEN, AWS_BEARER_TOKEN_BEDROCK, ASKNEWS_API_KEY, LAYA_API_KEY
 set -a; . ./.env; set +a
 node src/cli.ts run <post-id> --dry-run   # forecast one question without submitting
 node src/cli.ts status                    # recent runs and spend
+```
+
+Start the LAYA sidecar (CPU; the first start downloads the pinned weights):
+
+```bash
+(cd sidecar && uv sync)
+LAYA_HOST=127.0.0.1 LAYA_PORT=8790 LAYA_MODELS=multilingual LAYA_DEFAULT_MODEL=multilingual LAYA_DEVICE=cpu \
+  LAYA_REVISION=7b928d828b7b0e022f929d9bd2e44165aa270148 LAYA_API_KEY=$LAYA_API_KEY USE_TF=0 sidecar/.venv/bin/laya-serve
 ```
 
 Run the service against a local Valkey:
@@ -63,8 +97,9 @@ node src/cli.ts worker
 
 ## Deploy
 
-`deploy/install.sh <release.tar.gz>` installs Node, Valkey (loopback, append-only) and the systemd unit
-on an Ubuntu 24.04 host. The env file goes to `/etc/fenesh-bot/env` and is never committed.
+`deploy/push.sh <ssh-target>` ships the current commit and runs `deploy/install.sh` there: Node, Valkey
+(loopback, append-only), the LAYA sidecar (uv, CPU torch, pinned weights) and both systemd units on an
+Ubuntu 24.04 host. The env file goes to `/etc/fenesh-bot/env` and is never committed.
 
 ## Tests
 
