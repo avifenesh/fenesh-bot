@@ -32,12 +32,14 @@ vi.mock('../src/cli.ts', () => ({
 }));
 
 beforeAll(async () => {
-  const port = await freePort();
+  // TEST_VALKEY_PORT points the test at an already running server (e.g. another Valkey version).
+  const external = process.env.TEST_VALKEY_PORT;
+  const port = external ? Number(external) : await freePort();
   dir = mkdtempSync(join(tmpdir(), 'fenesh-test-'));
   process.env.VALKEY_PORT = String(port);
   process.env.FENESH_DATA_DIR = dir;
   process.env.FENESH_MINIBENCH = '0';
-  valkey = spawn('valkey-server', ['--port', String(port), '--save', '', '--appendonly', 'no', '--dir', dir], { stdio: 'ignore' });
+  if (!external) valkey = spawn('valkey-server', ['--port', String(port), '--save', '', '--appendonly', 'no', '--dir', dir], { stdio: 'ignore' });
   for (let i = 0; i < 50; i++) {
     try { await new Promise<void>((res, rej) => { const s = connect(port, '127.0.0.1', () => { s.end(); res(); }); s.on('error', rej); }); break; }
     catch { await new Promise((r) => setTimeout(r, 100)); }
