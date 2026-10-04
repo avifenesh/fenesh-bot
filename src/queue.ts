@@ -10,10 +10,12 @@ import { log } from './log.ts';
 import { getPost, openQuestions, type Question } from './metaculus.ts';
 import { forecastAndSubmit } from './cli.ts';
 import { spentSince, submitted } from './store.ts';
+import { syncOutcomes } from './evaluate.ts';
 
 const connection = { addresses: [{ host: config.valkey.host, port: config.valkey.port }] };
 const POLL = 'fenesh-poll';
 const QUESTION = 'fenesh-question';
+const EVALUATE = 'fenesh-evaluate';
 
 const leanForecasters = (process.env.FENESH_LEAN_FORECASTERS ?? 'gpt-6-sol,opus-5.5,grok-4.7').split(',');
 const dailyBudget = Number(process.env.FENESH_DAILY_BUDGET_USD ?? 60);
@@ -98,6 +100,9 @@ export async function startWorker(): Promise<void> {
   await poll.upsertJobScheduler('poll-open-questions', { every: config.pollEveryMs }, { name: 'poll', data: {} });
 
   const pollWorker = new Worker(POLL, async () => pollOnce(), { connection, concurrency: 1 });
+  const evaluate = new Queue(EVALUATE, { connection });
+  await evaluate.upsertJobScheduler('sync-outcomes', { every: 6 * 3600_000 }, { name: 'sync', data: {} });
+  const evalWorker = new Worker(EVALUATE, async () => syncOutcomes(), { connection, concurrency: 1, lockDuration: 30 * 60_000 });
   const questionWorker = new Worker(QUESTION, processQuestion, {
     connection, concurrency: config.questionConcurrency, lockDuration: 10 * 60_000, stalledInterval: 60_000,
   });
@@ -113,7 +118,7 @@ export async function startWorker(): Promise<void> {
 
   const stop = async () => {
     log.info('shutting down');
-    await Promise.allSettled([pollWorker.close(), questionWorker.close(), poll.close(), qq().close()]);
+    await Promise.allSettled([pollWorker.close(), questionWorker.close(), evalWorker.close(), poll.close(), evaluate.close(), qq().close()]);
     process.exit(0);
   };
   process.on('SIGTERM', stop);

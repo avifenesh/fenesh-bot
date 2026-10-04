@@ -4,7 +4,7 @@
 import type { Question } from '../metaculus.ts';
 import type { ToolSpec } from '../llm.ts';
 import { log } from '../log.ts';
-import { fetchPage, get, getJson } from './http.ts';
+import { fetchPage, get, getJson, htmlToText } from './http.ts';
 
 export interface Evidence {
   source: string;
@@ -294,7 +294,70 @@ const series: ResearchSource = {
   }],
 };
 
-export const SOURCES: ResearchSource[] = [exa, gdelt, wikipedia, markets, resolution, series];
+// ---------- Wikipedia Current Events: dated daily summaries of world news ----------
+
+const dayCache = new Map<string, { at: number; lines: string[] }>();
+
+function portalTitle(d: Date): string {
+  const m = d.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
+  return `Portal:Current_events/${d.getUTCFullYear()}_${m}_${d.getUTCDate()}`;
+}
+
+async function currentEventsDay(d: Date): Promise<string[]> {
+  const title = portalTitle(d);
+  const hit = dayCache.get(title);
+  const isToday = d.toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10);
+  // Past days are final; today's page is refreshed every 2 hours.
+  if (hit && (!isToday || Date.now() - hit.at < 2 * 3600_000)) return hit.lines;
+  const r = await get(`https://en.wikipedia.org/api/rest_v1/page/html/${encodeURIComponent(title)}`, { timeoutMs: 20_000 });
+  if (r.status === 404) { dayCache.set(title, { at: Date.now(), lines: [] }); return []; }
+  if (r.status >= 400) throw new Error(`current events ${r.status}`);
+  const { text } = htmlToText(r.text);
+  const date = d.toISOString().slice(0, 10);
+  const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length > 40).map((l) => `${date}: ${l}`);
+  dayCache.set(title, { at: Date.now(), lines });
+  return lines;
+}
+
+function keywordsOf(texts: string[]): string[] {
+  const stop = new Set('will the a an of in on by to for and or with be is are was were before after than at from this that which what who when how many much more less between during under over end its their there as it not no any all into about per'.split(' '));
+  const words = texts.join(' ').toLowerCase().match(/[a-z0-9][a-z0-9.'-]{2,}/g) ?? [];
+  return [...new Set(words.filter((w) => !stop.has(w)))];
+}
+
+export async function currentEvents(terms: string[], days = 14, max = 40): Promise<Evidence[]> {
+  const kws = keywordsOf(terms);
+  const out: { score: number; line: string; date: string }[] = [];
+  for (let i = 0; i < days; i++) {
+    const d = new Date(Date.now() - i * 86_400_000);
+    let lines: string[] = [];
+    try { lines = await currentEventsDay(d); } catch (e: any) { log.warn('current events', { err: e.message }); break; }
+    for (const line of lines) {
+      const low = line.toLowerCase();
+      const score = kws.reduce((a, k) => a + (low.includes(k) ? 1 : 0), 0);
+      if (score >= 2) out.push({ score, line, date: line.slice(0, 10) });
+    }
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, max)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .map((o) => ({ source: 'current-events', title: o.line.slice(12, 160), published: o.date, snippet: o.line.slice(12) }));
+}
+
+const currentEventsSource: ResearchSource = {
+  name: 'current-events',
+  async gather(q, plan) { return currentEvents([q.title, ...plan.queries], 14); },
+  tools: () => [{
+    name: 'current_events',
+    description: "Wikipedia's daily Current Events summaries of world news, filtered by keywords, newest first.",
+    parameters: { type: 'object', properties: { keywords: { type: 'string', description: 'space-separated keywords' }, days: { type: 'integer', description: '1-60' } }, required: ['keywords'] },
+    run: async ({ keywords, days }) => {
+      const items = await currentEvents([String(keywords)], Math.min(60, Math.max(1, days ?? 21)), 60);
+      return items.map((e) => `${e.published}: ${e.snippet}`).join('\n') || 'no matching entries';
+    },
+  }],
+};
+
+export const SOURCES: ResearchSource[] = [exa, gdelt, currentEventsSource, wikipedia, markets, resolution, series];
 
 export function fmt(items: Evidence[], withSnippet = false): string {
   if (!items.length) return 'no results';

@@ -8,7 +8,7 @@ const nextSlot = new Map<string, number>();
 const spacingMs: Record<string, number> = {
   'api.gdeltproject.org': 5_200, // GDELT asks for at most one request per 5 s
   'mcp.exa.ai': 1_200,
-  'en.wikipedia.org': 300,
+  'en.wikipedia.org': 1_000, // Wikimedia rate-limits anonymous API traffic hard
   'api.coingecko.com': 2_500,
 };
 

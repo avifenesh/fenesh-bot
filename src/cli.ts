@@ -3,6 +3,7 @@
 //   worker                      start the queue workers and the poll scheduler (the service)
 //   poll                        enqueue open questions once
 //   status                      recent runs and spend
+//   report [--no-sync]          fetch resolutions and score every model and the submitted forecast
 
 import { config } from './config.ts';
 import { log } from './log.ts';
@@ -40,13 +41,19 @@ async function main() {
     const { startWorker, pollOnce } = await import('./queue.ts');
     if (cmd === 'worker') await startWorker();
     else { console.log(await pollOnce()); process.exit(0); }
+  } else if (cmd === 'report') {
+    const { syncOutcomes, report } = await import('./evaluate.ts');
+    if (!args.includes('--no-sync')) await syncOutcomes();
+    const r = report();
+    console.log(`resolved questions: ${r.resolved}${r.peerMean != null ? `, mean Metaculus peer score ${r.peerMean.toFixed(2)}` : ''}`);
+    console.table(r.rows.map((x) => ({ component: x.component, n: x.n, meanLogScore: +x.meanLog.toFixed(4) })));
   } else if (cmd === 'status') {
     console.log(await me());
     console.table(recent(25));
     const day = new Date(Date.now() - 86_400_000).toISOString();
     console.log(`spend last 24h: $${spentSince(day).toFixed(2)}`);
   } else {
-    console.log('usage: cli.ts run <post-id> [--dry-run] | worker | poll | status');
+    console.log('usage: cli.ts run <post-id> [--dry-run] | worker | poll | status | report [--no-sync]');
     process.exit(2);
   }
 }
