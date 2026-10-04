@@ -8,7 +8,7 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync, existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { config } from './config.ts';
-import { call, lastJson, type ToolSpec } from './llm.ts';
+import { fast, lastJson, type ToolSpec } from './llm.ts';
 import { log } from './log.ts';
 import type { Question } from './metaculus.ts';
 import { currentEventsDay } from './research/sources.ts';
@@ -29,7 +29,7 @@ export async function writeDigest(day: Date): Promise<string | null> {
   if (existsSync(file)) return file;
   const lines = await currentEventsDay(day);
   if (lines.length < 5) return null;
-  const r = await call(config.fastModel, `Condense these news items from ${date} into a digest grouped by topic (conflicts, politics and elections, economy and markets, science and technology, disasters and health, other). Keep every number, name and date that matters; drop nothing that could decide a forecasting question. Bullets only, no commentary.
+  const r = await fast(`Condense these news items from ${date} into a digest grouped by topic (conflicts, politics and elections, economy and markets, science and technology, disasters and health, other). Keep every number, name and date that matters; drop nothing that could decide a forecasting question. Bullets only, no commentary.
 
 ${lines.map((l) => l.slice(12)).join('\n').slice(0, 60_000)}`, { label: 'wiki-digest', effort: 'low', maxTokens: 8000 });
   writeFileSync(file, `# World digest ${date}\n\nSource: Wikipedia Current Events portal for ${date}.\n\n${r.text.trim()}\n`);
@@ -51,7 +51,7 @@ export async function refreshDigests(days = 7): Promise<number> {
 export async function recordFacts(q: Question, brief: string): Promise<number> {
   ensure();
   try {
-    const r = await call(config.fastModel, `Extract the dated, checkable facts from this research brief. Only facts stated with a date (or clearly as of a date) and a source; no opinions, no forecasts.
+    const r = await fast(`Extract the dated, checkable facts from this research brief. Only facts stated with a date (or clearly as of a date) and a source; no opinions, no forecasts.
 
 ${brief.slice(0, 30_000)}
 

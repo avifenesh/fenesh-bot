@@ -1,6 +1,7 @@
 // Model calls through Amazon Bedrock with a bearer key.
-// Claude goes through the Converse API; OpenAI models go through the Mantle endpoint
-// (/openai/v1/responses for the GPT-6 family, /v1/responses for open-weight models).
+// Claude goes through the Converse API; OpenAI models go through the OpenAI-compatible Responses API,
+// on Mantle (plain openai.* ids) or on bedrock-runtime (global.openai.* profiles). LAYA is not an LLM
+// and has its own client (src/laya.ts).
 
 import { config, model, type ModelSpec } from './config.ts';
 import { log } from './log.ts';
@@ -61,6 +62,10 @@ async function post(url: string, body: unknown, timeoutMs: number): Promise<any>
   throw lastErr;
 }
 
+// Sent back for tool calls made after the round budget is spent, so the model writes its answer
+// instead of returning nothing.
+const BUDGET_SPENT = 'Not run: the tool budget for this task is used up. Write your final answer now from what you already have, without calling tools.';
+
 function safeParse(s: string | undefined): any {
   try { return JSON.parse(s || '{}'); } catch { return {}; }
 }
@@ -109,9 +114,12 @@ async function callConverse(spec: ModelSpec, prompt: string, o: CallOptions): Pr
     output += d.usage?.outputTokens ?? 0;
     const content: any[] = d.output?.message?.content ?? [];
     const uses = content.filter((c) => c.toolUse);
-    if (d.stopReason === 'tool_use' && uses.length && round < (o.maxToolRounds ?? 12)) {
+    const maxRounds = o.maxToolRounds ?? 12;
+    if (d.stopReason === 'tool_use' && uses.length && round <= maxRounds) {
       messages.push({ role: 'assistant', content });
+      const spent = round === maxRounds;
       const results = await Promise.all(uses.map(async (c) => {
+        if (spent) return { toolResult: { toolUseId: c.toolUse.toolUseId, content: [{ text: BUDGET_SPENT }] } };
         toolCalls++;
         const out = await runTool(o, c.toolUse.name, c.toolUse.input ?? {});
         return { toolResult: { toolUseId: c.toolUse.toolUseId, content: [{ text: out.slice(0, 60_000) }] } };
@@ -127,8 +135,9 @@ async function callConverse(spec: ModelSpec, prompt: string, o: CallOptions): Pr
 // ---- Mantle Responses (OpenAI models) ----
 
 async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): Promise<CallResult> {
-  const path = spec.transport === 'mantle-openai' ? '/openai/v1/responses' : '/v1/responses';
-  const url = `https://bedrock-mantle.${config.bedrockRegion}.api.aws${path}`;
+  const url = spec.transport === 'runtime-openai'
+    ? `https://bedrock-runtime.${config.bedrockRegion}.amazonaws.com/openai/v1/responses`
+    : `https://bedrock-mantle.${config.bedrockRegion}.api.aws/openai/v1/responses`;
   const tools = o.tools?.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters }));
   let inputItems: any[] = [{ role: 'user', content: prompt }];
   let input = 0, output = 0, toolCalls = 0;
@@ -142,15 +151,18 @@ async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): P
     };
     if (o.system) body.instructions = o.system;
     if (tools?.length) body.tools = tools;
+    const maxRounds = o.maxToolRounds ?? 12;
+    if (tools?.length && round > maxRounds) body.tool_choice = 'none';
     const d = await post(url, body, o.timeoutMs ?? 15 * 60_000);
     input += d.usage?.input_tokens ?? 0;
     output += d.usage?.output_tokens ?? 0;
     const items: any[] = d.output ?? [];
     const calls = items.filter((i) => i.type === 'function_call');
-    if (calls.length && round < (o.maxToolRounds ?? 12)) {
+    if (calls.length && round <= maxRounds) {
       // Stateless: send back everything the model produced plus our tool outputs.
       inputItems = [...inputItems, ...items];
       for (const c of calls) {
+        if (round === maxRounds) { inputItems.push({ type: 'function_call_output', call_id: c.call_id, output: BUDGET_SPENT }); continue; }
         toolCalls++;
         const out = await runTool(o, c.name, safeParse(c.arguments));
         inputItems.push({ type: 'function_call_output', call_id: c.call_id, output: out.slice(0, 60_000) });
@@ -168,11 +180,17 @@ async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): P
 
 export async function call(modelKey: string, prompt: string, o: CallOptions = {}): Promise<CallResult> {
   const spec = model(modelKey);
+  if (spec.transport === 'laya') throw new Error(`${modelKey} is not a language model; use src/laya.ts`);
   const t0 = Date.now();
   const r = spec.transport === 'converse' ? await callConverse(spec, prompt, o) : await callResponses(spec, prompt, o);
   log.info('llm', { model: spec.key, label: o.label, ms: Date.now() - t0, in: r.usage.input, out: r.usage.output, usd: +r.usage.costUsd.toFixed(4), tools: r.toolCalls });
   for (const fn of UsageSink) fn(spec.key, o.label ?? '', r.usage);
   return r;
+}
+
+// The fast steps (plan, classification, market match, repair, wiki) run on one model at low effort.
+export function fast(prompt: string, o: CallOptions = {}): Promise<CallResult> {
+  return call(config.fastModel, prompt, { effort: config.fastEffort, ...o });
 }
 
 // Pull the last JSON object out of a model reply (models are told to end with one).

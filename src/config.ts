@@ -2,7 +2,7 @@
 
 import './net.ts';
 
-export type Transport = 'converse' | 'mantle-openai' | 'mantle-v1';
+export type Transport = 'converse' | 'mantle-openai' | 'runtime-openai' | 'laya';
 
 export interface ModelSpec {
   key: string; // short name used in logs and the archive
@@ -13,9 +13,9 @@ export interface ModelSpec {
   // Last date the model may know about (training cutoff, from the providers' docs). Backtests only
   // use questions that open after the latest cutoff of the models in the run.
   cutoff: string;
-  // Open-weight model: votes in the aggregate but does not count toward the supervisor trigger, and
-  // replay scores the ensemble with and without it.
-  openWeight?: boolean;
+  // System 1 member (LAYA): answers in one forward pass with no reasoning, votes in the aggregate,
+  // does not count toward the supervisor trigger, and replay scores the ensemble with and without it.
+  system1?: boolean;
   // USD per million tokens (reasoning tokens bill as output). Bedrock prices checked 2026-10-04:
   // global profiles at base rate, Mantle OpenAI ids at the in-region rate (+10%).
   price: { input: number; output: number };
@@ -28,9 +28,12 @@ export const MODELS: Record<string, ModelSpec> = {
     key: 'gpt-6-astra', id: 'openai.gpt-6-astra', transport: 'mantle-openai',
     effort: 'xhigh', cutoff: '2026-04-30', maxTokens: 32000, price: { input: 11, output: 55 },
   },
+  // Exception to the plain openai.* id rule (owner, 2026-10-04): GPT-6.1 Sol runs as the global
+  // inference profile on bedrock-runtime. The bare id is refused there ("on-demand throughput isn't
+  // supported"). Astra keeps its plain id on Mantle.
   'gpt-6.1-sol': {
-    key: 'gpt-6.1-sol', id: 'openai.gpt-6.1-sol', transport: 'mantle-openai',
-    effort: 'xhigh', cutoff: '2026-04-30', maxTokens: 32000, price: { input: 2.2, output: 11 },
+    key: 'gpt-6.1-sol', id: 'global.openai.gpt-6.1-sol', transport: 'runtime-openai',
+    effort: 'xhigh', cutoff: '2026-04-30', maxTokens: 32000, price: { input: 2, output: 10 },
   },
   'opus-5.5': {
     key: 'opus-5.5', id: 'global.anthropic.claude-opus-5-5', transport: 'converse',
@@ -40,11 +43,13 @@ export const MODELS: Record<string, ModelSpec> = {
     key: 'fable-5.1', id: 'global.anthropic.claude-fable-5-1', transport: 'converse',
     effort: 'high', cutoff: '2026-06-30', maxTokens: 32000, price: { input: 10, output: 50 },
   },
-  // The open-weight model: a voting member of the ensemble, and the fast steps (query writing,
-  // classification, market matching, parse repair).
-  'gpt-oss-120b': {
-    key: 'gpt-oss-120b', id: 'openai.gpt-oss-120b', transport: 'mantle-v1', openWeight: true,
-    effort: 'medium', cutoff: '2024-06-30', maxTokens: 16000, price: { input: 0.15, output: 0.6 },
+  // System 1: LAYA (Apache-2.0), a non-generative decision model that returns calibrated
+  // probabilities in one forward pass. It runs on CPU in the local sidecar (sidecar/, laya-serve),
+  // not on Bedrock. Its training data is undocumented, so its release date (2026-09-18) stands in
+  // for the cutoff, which keeps it out of backtests on earlier questions.
+  'laya': {
+    key: 'laya', id: 'convaiinnovations/laya (multilingual)', transport: 'laya', system1: true,
+    effort: 'none', cutoff: '2026-09-18', maxTokens: 0, price: { input: 0, output: 0 },
   },
 };
 
@@ -62,8 +67,10 @@ export const config = {
   // Tournaments polled for open questions. The current MiniBench round is polled by its slug, 'minibench'.
   tournaments: list('FENESH_TOURNAMENTS', 'fall-futureeval-2026'),
   discoverMiniBench: (env.FENESH_MINIBENCH ?? '1') === '1',
-  forecasters: list('FENESH_FORECASTERS', 'gpt-6-astra,gpt-6.1-sol,opus-5.5,fable-5.1,gpt-oss-120b'),
-  fastModel: env.FENESH_FAST_MODEL ?? 'gpt-oss-120b',
+  forecasters: list('FENESH_FORECASTERS', 'gpt-6-astra,gpt-6.1-sol,opus-5.5,fable-5.1,laya'),
+  // Plan, base-rate classification, market matching, JSON repair and wiki notes.
+  fastModel: env.FENESH_FAST_MODEL ?? 'gpt-6.1-sol',
+  fastEffort: env.FENESH_FAST_EFFORT ?? 'low',
   researchModel: env.FENESH_RESEARCH_MODEL ?? 'gpt-6.1-sol',
   // Submit nothing; log what would be submitted.
   dryRun: (env.FENESH_DRY_RUN ?? '0') === '1',
@@ -73,6 +80,15 @@ export const config = {
   binaryClip: Number(env.FENESH_BINARY_CLIP ?? 0.02),
   pollEveryMs: Number(env.FENESH_POLL_EVERY_MS ?? 10 * 60_000),
   questionConcurrency: Number(env.FENESH_QUESTION_CONCURRENCY ?? 6),
+  // LAYA sidecar (laya-serve on loopback).
+  laya: {
+    url: env.FENESH_LAYA_URL ?? 'http://127.0.0.1:8790',
+    key: env.LAYA_API_KEY ?? '',
+    model: env.FENESH_LAYA_MODEL ?? 'multilingual',
+    // The card measures 16-18 of 20 right up to about 4,000 tokens of text and less beyond, so the
+    // state is trimmed to fit this budget.
+    maxLen: Number(env.FENESH_LAYA_MAX_LEN ?? 4096),
+  },
   userAgent: env.FENESH_USER_AGENT ?? 'fenesh-bot/0.1 (Metaculus forecasting bot; contact via metaculus.com/accounts/profile/309777)',
 };
 
@@ -82,6 +98,6 @@ export function model(key: string): ModelSpec {
   return m;
 }
 
-export function isOpenWeight(key: string): boolean {
-  return MODELS[key]?.openWeight === true;
+export function isSystem1(key: string): boolean {
+  return MODELS[key]?.system1 === true;
 }

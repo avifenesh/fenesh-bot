@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # push.sh - ship the current commit to a host and (re)install fenesh-bot there.
 # Usage: deploy/push.sh <ssh-target> [env-file]
-#   env-file defaults to building one from ~/.config/metaculus/bot.env + ~/.config/tiyuvta/bedrock.env
+#   env-file defaults to building one from ~/.config/metaculus/bot.env, ~/.config/tiyuvta/bedrock.env
+#   and ~/.config/asknews/env, plus a fresh LAYA sidecar key
 # The env file is copied with mode 0640 root:fenesh and never stored in the repo or the tarball.
 set -euo pipefail
 HOST=${1:?usage: push.sh <ssh-target> [env-file]}
@@ -19,6 +20,9 @@ if [ -z "$ENV_FILE" ]; then
     grep -h '^METACULUS_TOKEN=' ~/.config/metaculus/bot.env
     grep -h '^AWS_BEARER_TOKEN_BEDROCK=' ~/.config/tiyuvta/bedrock.env
     echo 'BEDROCK_REGION=us-east-1'
+    grep -h '^ASKNEWS_API_KEY=' ~/.config/asknews/env 2>/dev/null || true
+    # Loopback-only sidecar key, fresh on every push.
+    echo "LAYA_API_KEY=$(openssl rand -hex 24)"
     grep -hv '^\s*#' .env.example | grep -E '^FENESH_' || true
   } > "$ENV_FILE"
 fi
