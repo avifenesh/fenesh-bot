@@ -3,8 +3,10 @@
 
 import type { Question } from './metaculus.ts';
 import { fromLocation } from './numeric.ts';
+import { nowMs } from './asof.ts';
 
-export function today(): string { return new Date().toISOString().slice(0, 10); }
+
+export function today(): string { return new Date(nowMs()).toISOString().slice(0, 10); }
 
 function fmtValue(q: Question, v: number): string {
   if (q.type === 'date') return new Date(v * 1000).toISOString().slice(0, 10);

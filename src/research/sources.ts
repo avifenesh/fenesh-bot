@@ -4,6 +4,7 @@
 import type { Question } from '../metaculus.ts';
 import type { ToolSpec } from '../llm.ts';
 import { log } from '../log.ts';
+import { asOfMs, liveOnly, nowMs } from '../asof.ts';
 import { fetchPage, get, getJson, htmlToText } from './http.ts';
 
 export interface Evidence {
@@ -40,7 +41,15 @@ function cool(name: string, minutes = 10): void { coolUntil.set(name, Date.now()
 
 async function gdeltSearch(query: string, days = 30, max = 15): Promise<Evidence[]> {
   const u = new URL('https://api.gdeltproject.org/api/v2/doc/doc');
-  u.search = new URLSearchParams({ query: `${query} sourcelang:english`, mode: 'artlist', maxrecords: String(max), format: 'json', timespan: `${days}d`, sort: 'datedesc' }).toString();
+  const params: Record<string, string> = { query: `${query} sourcelang:english`, mode: 'artlist', maxrecords: String(max), format: 'json', sort: 'datedesc' };
+  const asOf = asOfMs();
+  if (asOf == null) params.timespan = `${days}d`;
+  else {
+    const stamp = (ms: number) => new Date(ms).toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    params.startdatetime = stamp(asOf - days * 86_400_000);
+    params.enddatetime = stamp(asOf);
+  }
+  u.search = new URLSearchParams(params).toString();
   cooling('gdelt');
   const r = await get(u.toString(), { timeoutMs: 30_000 });
   if (r.status === 429 || /limit requests/i.test(r.text.slice(0, 200))) { cool('gdelt'); throw new Error('gdelt rate-limited'); }
@@ -73,6 +82,7 @@ const gdelt: ResearchSource = {
 // ---------- Exa web search through its hosted MCP endpoint ----------
 
 async function exaSearch(query: string, n = 8): Promise<Evidence[]> {
+  liveOnly('web search');
   cooling('exa');
   const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
   if (process.env.EXA_API_KEY) headers['x-api-key'] = process.env.EXA_API_KEY;
@@ -116,7 +126,22 @@ const exa: ResearchSource = {
 
 // ---------- Wikipedia ----------
 
+async function wikiExtractAsOf(title: string, asOf: number, chars: number): Promise<Evidence | null> {
+  const u = new URL('https://en.wikipedia.org/w/api.php');
+  u.search = new URLSearchParams({ action: 'query', prop: 'revisions', titles: title, rvlimit: '1', rvdir: 'older', rvstart: new Date(asOf).toISOString(), rvprop: 'ids|timestamp', redirects: '1', format: 'json', formatversion: '2' }).toString();
+  const d = await getJson(u.toString());
+  const page = d.query?.pages?.[0];
+  const rev = page?.revisions?.[0];
+  if (!rev) return null;
+  const v = new URL('https://en.wikipedia.org/w/api.php');
+  v.search = new URLSearchParams({ action: 'parse', oldid: String(rev.revid), prop: 'text', format: 'json', formatversion: '2' }).toString();
+  const html = (await getJson(v.toString())).parse?.text ?? '';
+  return { source: 'wikipedia', title: page.title, url: `https://en.wikipedia.org/w/index.php?oldid=${rev.revid}`, published: String(rev.timestamp).slice(0, 10), snippet: htmlToText(html).text.slice(0, chars) };
+}
+
 async function wikiExtract(title: string, chars = 6000): Promise<Evidence | null> {
+  const asOf = asOfMs();
+  if (asOf != null) return wikiExtractAsOf(title, asOf, chars);
   const u = new URL('https://en.wikipedia.org/w/api.php');
   u.search = new URLSearchParams({ action: 'query', prop: 'extracts|info', explaintext: '1', redirects: '1', titles: title, format: 'json', inprop: 'url' }).toString();
   const d = await getJson(u.toString());
@@ -163,7 +188,52 @@ export interface MarketQuote {
   url: string;
 }
 
+async function polymarketPriceAt(tokenId: string, ms: number): Promise<number | null> {
+  const end = Math.floor(ms / 1000);
+  const d = await getJson(`https://clob.polymarket.com/prices-history?market=${tokenId}&startTs=${end - 3 * 86_400}&endTs=${end}&fidelity=60`);
+  const h: Array<{ t: number; p: number }> = d.history ?? [];
+  return h.length ? h[h.length - 1].p : null;
+}
+
+async function polymarketSearchAsOf(query: string, asOf: number): Promise<MarketQuote[]> {
+  const u = new URL('https://gamma-api.polymarket.com/public-search');
+  u.search = new URLSearchParams({ q: query, limit_per_type: '8', keep_closed_markets: '1' }).toString();
+  const d = await getJson(u.toString());
+  const out: MarketQuote[] = [];
+  for (const e of d.events ?? []) {
+    for (const m of e.markets ?? []) {
+      const start = Date.parse(m.startDate ?? m.createdAt ?? '');
+      const end = Date.parse(m.closedTime ?? m.endDate ?? '');
+      if (!(start <= asOf) || (Number.isFinite(end) && end < asOf)) continue; // must have been open then
+      const outcomes: string[] = JSON.parse(m.outcomes ?? '[]');
+      const tokens: string[] = JSON.parse(m.clobTokenIds ?? '[]');
+      const i = outcomes.indexOf('Yes');
+      if (i < 0 || !tokens[i]) continue;
+      const p = await polymarketPriceAt(tokens[i], asOf).catch(() => null);
+      if (p == null) continue;
+      out.push({ venue: 'polymarket', question: m.question, outcome: 'Yes', probability: p, closeTime: m.endDate, url: `https://polymarket.com/event/${e.slug}` });
+    }
+  }
+  return out;
+}
+
+async function manifoldSearchAsOf(query: string, asOf: number): Promise<MarketQuote[]> {
+  const u = new URL('https://api.manifold.markets/v0/search-markets');
+  u.search = new URLSearchParams({ term: query, limit: '8', filter: 'all' }).toString();
+  const d: any[] = await getJson(u.toString());
+  const out: MarketQuote[] = [];
+  for (const m of d.filter((x) => x.outcomeType === 'BINARY' && x.createdTime <= asOf && (!x.resolutionTime || x.resolutionTime > asOf))) {
+    const bets: any[] = await getJson(`https://api.manifold.markets/v0/bets?contractId=${m.id}&beforeTime=${asOf}&limit=1`).catch(() => []);
+    const p = bets[0]?.probAfter;
+    if (typeof p !== 'number') continue;
+    out.push({ venue: 'manifold', question: m.question, outcome: 'Yes', probability: p, closeTime: m.closeTime ? new Date(m.closeTime).toISOString() : undefined, url: m.url });
+  }
+  return out;
+}
+
 export async function polymarketSearch(query: string): Promise<MarketQuote[]> {
+  const asOf = asOfMs();
+  if (asOf != null) return polymarketSearchAsOf(query, asOf);
   const u = new URL('https://gamma-api.polymarket.com/public-search');
   u.search = new URLSearchParams({ q: query, limit_per_type: '6', events_status: 'active' }).toString();
   const d = await getJson(u.toString());
@@ -182,6 +252,8 @@ export async function polymarketSearch(query: string): Promise<MarketQuote[]> {
 }
 
 export async function manifoldSearch(query: string): Promise<MarketQuote[]> {
+  const asOf = asOfMs();
+  if (asOf != null) return manifoldSearchAsOf(query, asOf);
   const u = new URL('https://api.manifold.markets/v0/search-markets');
   u.search = new URLSearchParams({ term: query, limit: '6', filter: 'open' }).toString();
   const d = await getJson(u.toString());
@@ -225,11 +297,23 @@ export function linksIn(text: string): string[] {
   return [...urls];
 }
 
+// A page as it was at the as-of moment, from the Wayback Machine; live otherwise.
+export async function fetchPageAt(url: string, maxChars: number): Promise<{ url: string; title: string; text: string }> {
+  const asOf = asOfMs();
+  if (asOf == null) return fetchPage(url, maxChars);
+  const stamp = new Date(asOf).toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const cdx = await getJson(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&to=${stamp}&limit=-1&output=json&filter=statuscode:200&fl=timestamp,original`);
+  const row = Array.isArray(cdx) && cdx.length > 1 ? cdx[cdx.length - 1] : null;
+  if (!row) throw new Error(`no archived copy before ${new Date(asOf).toISOString().slice(0, 10)}`);
+  const page = await fetchPage(`https://web.archive.org/web/${row[0]}id_/${row[1]}`, maxChars);
+  return { ...page, title: `${page.title} (archived ${row[0].slice(0, 8)})` };
+}
+
 const resolution: ResearchSource = {
   name: 'resolution',
   async gather(q) {
     const urls = linksIn(`${q.resolutionCriteria}\n${q.finePrint}`).slice(0, 4);
-    const res = await Promise.allSettled(urls.map((u) => fetchPage(u, 8000)));
+    const res = await Promise.allSettled(urls.map((u) => fetchPageAt(u, 8000)));
     return res.flatMap((r, i) => (r.status === 'fulfilled'
       ? [{ source: 'resolution', title: r.value.title || urls[i], url: urls[i], snippet: r.value.text }]
       : []));
@@ -238,7 +322,7 @@ const resolution: ResearchSource = {
     name: 'fetch_page',
     description: 'Fetch a web page or data file and return its readable text (first 20k characters).',
     parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
-    run: async ({ url }) => { const p = await fetchPage(url, 20_000); return `${p.title}\n${p.url}\n\n${p.text}`; },
+    run: async ({ url }) => { const p = await fetchPageAt(url, 20_000); return `${p.title}\n${p.url}\n\n${p.text}`; },
   }],
 };
 
@@ -247,7 +331,14 @@ const resolution: ResearchSource = {
 export interface Series { ref: SeriesRef; points: Array<[string, number]> } // [ISO date, value]
 
 export async function fetchSeries(ref: SeriesRef, days = 400): Promise<Series> {
-  const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+  const until = nowMs();
+  const since = new Date(until - days * 86_400_000).toISOString().slice(0, 10);
+  const untilDay = new Date(until).toISOString().slice(0, 10);
+  const cut = (s: Series): Series => ({ ...s, points: s.points.filter(([d]) => d <= untilDay) });
+  return cut(await fetchSeriesRaw(ref, days, since, until));
+}
+
+async function fetchSeriesRaw(ref: SeriesRef, days: number, since: string, until: number): Promise<Series> {
   if (ref.kind === 'fred') {
     const r = await get(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(ref.id)}&cosd=${since}`);
     if (r.status >= 400) throw new Error(`FRED ${r.status}`);
@@ -256,10 +347,12 @@ export async function fetchSeries(ref: SeriesRef, days = 400): Promise<Series> {
     return { ref, points };
   }
   if (ref.kind === 'crypto') {
-    const d = await getJson(`https://api.coingecko.com/api/v3/coins/${encodeURIComponent(ref.id)}/market_chart?vs_currency=usd&days=${Math.min(days, 365)}&interval=daily`);
+    const to = Math.floor(until / 1000), from = to - Math.min(days, 365) * 86_400;
+    const d = await getJson(`https://api.coingecko.com/api/v3/coins/${encodeURIComponent(ref.id)}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`);
     return { ref, points: (d.prices ?? []).map(([t, v]: [number, number]) => [new Date(t).toISOString().slice(0, 10), v]) };
   }
-  const d = await getJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ref.id)}?range=2y&interval=1d`);
+  const p2 = Math.floor(until / 1000), p1 = p2 - Math.max(days, 30) * 86_400;
+  const d = await getJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ref.id)}?period1=${p1}&period2=${p2}&interval=1d`);
   const res = d.chart?.result?.[0];
   if (!res) throw new Error('yahoo: no data');
   const closes: number[] = res.indicators?.quote?.[0]?.close ?? [];
@@ -339,8 +432,9 @@ function keywordsOf(texts: string[]): string[] {
 export async function currentEvents(terms: string[], days = 14, max = 40): Promise<Evidence[]> {
   const kws = keywordsOf(terms);
   const out: { score: number; line: string; date: string }[] = [];
-  for (let i = 0; i < days; i++) {
-    const d = new Date(Date.now() - i * 86_400_000);
+  const asOf = asOfMs();
+  for (let i = asOf == null ? 0 : 1; i < days; i++) { // in a backtest, the as-of day itself is not finished
+    const d = new Date(nowMs() - i * 86_400_000);
     let lines: string[] = [];
     try { lines = await currentEventsDay(d); } catch (e: any) { log.warn('current events', { err: e.message }); break; }
     for (const line of lines) {

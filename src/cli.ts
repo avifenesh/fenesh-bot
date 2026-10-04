@@ -3,7 +3,8 @@
 //   worker                      start the queue workers and the poll scheduler (the service)
 //   poll                        enqueue open questions once
 //   status                      recent runs and spend
-//   report [--no-sync]          fetch resolutions and score every model and the submitted forecast
+//   report [--no-sync] [--backtest]  fetch resolutions and score every model and the submitted forecast
+//   backtest <census.json> [--models a,b] [--from YYYY-MM-DD] [--n 20] [--types binary,numeric] [--concurrency 3] [--no-supervisor]
 
 import { config } from './config.ts';
 import { log } from './log.ts';
@@ -53,22 +54,35 @@ async function main() {
     const { startWorker, pollOnce } = await import('./queue.ts');
     if (cmd === 'worker') await startWorker();
     else { console.log(await pollOnce()); process.exit(0); }
+  } else if (cmd === 'backtest') {
+    const { loadCensus, selectItems, runBacktest } = await import('./backtest.ts');
+    const flag = (name: string) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
+    const opts = {
+      models: (flag('models') ?? config.forecasters.join(',')).split(','),
+      from: flag('from'), n: Number(flag('n') ?? 20), types: flag('types')?.split(','),
+      concurrency: Number(flag('concurrency') ?? 3), supervisor: !args.includes('--no-supervisor'), seed: Number(flag('seed') ?? 7),
+    };
+    const items = selectItems(loadCensus(args[0]), opts);
+    console.log(`backtesting ${items.length} questions with ${opts.models.join(', ')}`);
+    console.log(await runBacktest(items, opts));
   } else if (cmd === 'report') {
     const { syncOutcomes, report } = await import('./evaluate.ts');
-    if (!args.includes('--no-sync')) await syncOutcomes();
-    const r = report();
+    const backtest = args.includes('--backtest');
+    if (!args.includes('--no-sync') && !backtest) await syncOutcomes();
+    const statuses = backtest ? ['backtest'] : ['submitted', 'dry_run'];
+    const r = report(statuses);
     console.log(`resolved questions: ${r.resolved}${r.peerMean != null ? `, mean Metaculus peer score ${r.peerMean.toFixed(2)}` : ''}`);
     console.table(r.rows.map((x) => ({ component: x.component, n: x.n, meanLogScore: +x.meanLog.toFixed(4) })));
     const { replay } = await import('./evaluate.ts');
     console.log('aggregation variants replayed on the same questions:');
-    console.table(replay().map((x) => ({ variant: x.component, n: x.n, meanLogScore: +x.meanLog.toFixed(4) })));
+    console.table(replay(statuses).map((x) => ({ variant: x.component, n: x.n, meanLogScore: +x.meanLog.toFixed(4) })));
   } else if (cmd === 'status') {
     console.log(await me());
     console.table(recent(25));
     const day = new Date(Date.now() - 86_400_000).toISOString();
     console.log(`spend last 24h: $${spentSince(day).toFixed(2)}`);
   } else {
-    console.log('usage: cli.ts run <post-id> [--dry-run] | worker | poll | status | report [--no-sync]');
+    console.log('usage: cli.ts run <post-id> [--dry-run] | worker | poll | status | report [--no-sync] [--backtest] | backtest <census.json> [options]');
     process.exit(2);
   }
 }

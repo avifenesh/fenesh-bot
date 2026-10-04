@@ -11,6 +11,9 @@ export interface ModelSpec {
   effort: string; // reasoning effort passed to the provider
   serviceTier?: 'priority' | 'flex' | 'default';
   maxTokens: number;
+  // Last date the model may know about (training cutoff, from the providers' docs). Backtests only
+  // use questions that open after the latest cutoff of the models in the run.
+  cutoff: string;
   // USD per million tokens (reasoning tokens bill as output). Bedrock prices checked 2026-10-04:
   // global profiles at base rate, Mantle OpenAI ids at the in-region rate (+10%), Grok at the priority tier (1.75x).
   price: { input: number; output: number };
@@ -21,28 +24,30 @@ const env = process.env;
 export const MODELS: Record<string, ModelSpec> = {
   'gpt-6-astra': {
     key: 'gpt-6-astra', id: 'openai.gpt-6-astra', transport: 'mantle-openai',
-    effort: 'xhigh', maxTokens: 32000, price: { input: 11, output: 55 },
+    effort: 'xhigh', cutoff: '2026-04-30', maxTokens: 32000, price: { input: 11, output: 55 },
   },
   'gpt-6-sol': {
     key: 'gpt-6-sol', id: 'openai.gpt-6.1-sol', transport: 'mantle-openai',
-    effort: 'xhigh', maxTokens: 32000, price: { input: 2.2, output: 11 },
+    effort: 'xhigh', cutoff: '2026-04-30', maxTokens: 32000, price: { input: 2.2, output: 11 },
   },
   'opus-5.5': {
     key: 'opus-5.5', id: 'global.anthropic.claude-opus-5-5', transport: 'converse',
-    effort: 'high', maxTokens: 32000, price: { input: 4, output: 20 },
+    effort: 'high', cutoff: '2026-06-30', maxTokens: 32000, price: { input: 4, output: 20 },
   },
   'fable-5.1': {
     key: 'fable-5.1', id: 'global.anthropic.claude-fable-5-1', transport: 'converse',
-    effort: 'high', maxTokens: 32000, price: { input: 10, output: 50 },
+    effort: 'high', cutoff: '2026-06-30', maxTokens: 32000, price: { input: 10, output: 50 },
   },
+  // Grok 4.7: xAI's docs give a May 2026 cutoff; a launch write-up mentions supplemental data through
+  // August 2026, so backtests treat August as the cutoff.
   'grok-4.7': {
     key: 'grok-4.7', id: 'global.xai.grok-4.7', transport: 'runtime-chat',
-    effort: 'xhigh', serviceTier: 'priority', maxTokens: 32000, price: { input: 3.5, output: 10.5 },
+    effort: 'xhigh', serviceTier: 'priority', cutoff: '2026-08-31', maxTokens: 32000, price: { input: 3.5, output: 10.5 },
   },
   // Open-weight model for the fast steps: query writing, relevance filtering, market matching, parse repair.
   'gpt-oss-120b': {
     key: 'gpt-oss-120b', id: 'openai.gpt-oss-120b', transport: 'mantle-v1',
-    effort: 'medium', maxTokens: 16000, price: { input: 0.15, output: 0.6 },
+    effort: 'medium', cutoff: '2024-06-30', maxTokens: 16000, price: { input: 0.15, output: 0.6 },
   },
 };
 

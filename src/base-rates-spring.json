@@ -1,0 +1,99 @@
+{
+ "source": "Resolved binary questions of the Metaculus FutureEval Spring 2026 bot tournament only (resolved before July 2026; used for backtests on later questions)",
+ "overall": {
+  "yes": 56,
+  "n": 167
+ },
+ "byTemplate": {
+  "event happens before/by deadline": {
+   "yes": 19,
+   "n": 87
+  },
+  "count/quantity threshold": {
+   "yes": 11,
+   "n": 28
+  },
+  "election/referendum/contest outcome": {
+   "yes": 10,
+   "n": 15
+  },
+  "other": {
+   "yes": 7,
+   "n": 13
+  },
+  "market/asset price threshold": {
+   "yes": 3,
+   "n": 9
+  },
+  "record / ranking / leaderboard position": {
+   "yes": 0,
+   "n": 6
+  },
+  "state/event on, at, or as of a date/event": {
+   "yes": 4,
+   "n": 5
+  },
+  "economic indicator threshold": {
+   "yes": 1,
+   "n": 2
+  },
+  "still/remain (status-quo YES phrasing)": {
+   "yes": 1,
+   "n": 1
+  },
+  "one option of a split multi-part question \"(X)\"": {
+   "yes": 0,
+   "n": 1
+  }
+ },
+ "byTopic": {
+  "politics/elections": {
+   "yes": 17,
+   "n": 39
+  },
+  "tech/AI/computing": {
+   "yes": 8,
+   "n": 23
+  },
+  "economics/markets": {
+   "yes": 7,
+   "n": 23
+  },
+  "geopolitics/conflict": {
+   "yes": 6,
+   "n": 22
+  },
+  "health": {
+   "yes": 2,
+   "n": 15
+  },
+  "environment/weather/climate": {
+   "yes": 1,
+   "n": 11
+  },
+  "law/courts": {
+   "yes": 2,
+   "n": 9
+  },
+  "sports/entertainment": {
+   "yes": 5,
+   "n": 9
+  },
+  "science/space": {
+   "yes": 3,
+   "n": 6
+  },
+  "uncategorized": {
+   "yes": 3,
+   "n": 6
+  },
+  "social": {
+   "yes": 1,
+   "n": 3
+  },
+  "crypto": {
+   "yes": 1,
+   "n": 1
+  }
+ }
+}
