@@ -310,7 +310,11 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
       log.warn('supervisor failed', { q: q.questionId, err: e.message });
     }
   }
-  if (forecasts.filter((f) => f.ok).length < Math.min(2, models.length)) throw new Error('fewer than two forecasters succeeded');
+  const okCount = forecasts.filter((f) => f.ok).length;
+  const need = Math.min(2, models.length);
+  if (okCount < need) {
+    throw new Error(`${okCount} of ${models.length} forecasters produced a usable forecast (need ${need}): ${forecasts.filter((f) => !f.ok).map((f) => `${f.model}: ${f.error}`).join('; ')}`);
+  }
   const { payload, headline, marketWeight: mw } = aggregate(q, forecasts, market);
   const base = { plan, evidence, brief, round1, addendum, forecasts, payload, headline, costUsd: b.spent, disagreement: dis,
     market, marketWeight: mw, gut: g.pYes != null || g.probs ? { pYes: g.pYes, probs: g.probs } : undefined, baseRate: cls.baseRateText, shadow };
