@@ -46,13 +46,18 @@ Return only a JSON object with:
 - "series": 0-3 data series that track the quantity in question, each {"kind": "fred"|"crypto"|"stock", "id": "..."} (FRED series id, CoinGecko coin id, or Yahoo Finance ticker). Only include series you are confident exist.`;
 }
 
-export function researchPrompt(q: Question, digest: string): string {
+export function researchPrompt(q: Question, digest: string, minSources = 10): string {
   return `Today is ${today()}. You are the research analyst for a forecasting team. Your job is to find and verify the facts that decide this question. You do not give a probability; the forecasters do that from your brief.
 
 ${questionBlock(q)}
 
 Initial search results (titles, snippets and data gathered automatically):
 ${digest}
+
+Rules for sources:
+- Use web_search. Run at least three searches of your own beyond the initial results: the latest news, the resolution source, and base rates.
+- Cite at least ${minSources} distinct, valid sources, each with its URL: real publishers, official sites and data providers. At most 3 from one domain. Search-result pages, spam mirrors and copies of unknown origin do not count.
+- Every key fact carries the URL it came from.
 
 Use the tools to:
 1. Read the resolution source itself if one is named, and record its current value or state.
@@ -71,6 +76,7 @@ Then write the brief in this format:
 ## Market and crowd signals
 ## Conflicting or uncertain evidence
 ## What would change the outcome
+## Sources (at least ${minSources}: URL, publisher, date)
 
 Be factual and dated. Do not include a probability for the question.`;
 }

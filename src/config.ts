@@ -60,6 +60,8 @@ export const config = {
   // Plan, base-rate classification, market matching, JSON repair and wiki notes.
   fastModel: env.FENESH_FAST_MODEL ?? 'gpt-6.1-sol',
   fastEffort: env.FENESH_FAST_EFFORT ?? 'low',
+  // Tried once when the fast or research model keeps failing (503s, empty replies).
+  fallbackModel: env.FENESH_FALLBACK_MODEL ?? 'opus-5.5',
   researchModel: env.FENESH_RESEARCH_MODEL ?? 'gpt-6.1-sol',
   // Submit nothing; log what would be submitted.
   dryRun: (env.FENESH_DRY_RUN ?? '0') === '1',
