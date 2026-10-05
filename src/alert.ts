@@ -1,5 +1,6 @@
-// Owner alerts. FENESH_ALERT_WEBHOOK takes a plain-text POST, so an ntfy topic URL works as is (the
-// owner's phone gets ntfy pushes); FENESH_ALERT_TOKEN goes out as a bearer token when set.
+// Owner alerts. Every alert is logged as {"msg":"alert"}; deploy/alert-relay.sh on the rig reads those
+// lines from the journal and sends them to the owner's phone through Hermes. FENESH_ALERT_WEBHOOK is an
+// optional extra channel: a plain-text POST, with FENESH_ALERT_TOKEN as a bearer token when set.
 
 import { log } from './log.ts';
 

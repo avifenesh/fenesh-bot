@@ -1,0 +1,8 @@
+[Unit]
+Description=fenesh-bot alert relay: bot host journal to the owner's phone through Hermes
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/fenesh-bot/deploy/alert-relay.sh
+TimeoutStartSec=120

@@ -37,9 +37,10 @@ can be scored when questions resolve.
 - A per-question cost cap and a daily budget; past the budget the bot uses the cheaper path (GPT-6.1 Sol,
   Opus 5.5 and Fable 5.1, no supervisor). MiniBench gets the full path, since it is the
   bench the system is tuned against.
-- Alerts go to a webhook (`FENESH_ALERT_WEBHOOK`, plain-text POST; an ntfy topic works, with
-  `FENESH_ALERT_TOKEN` as its bearer token) when a question fails or closes unforecast, or when the
-  AskNews wallet runs dry.
+- Alerts (a question failed or closed unforecast, the AskNews wallet ran dry) are logged as
+  `{"msg":"alert"}`. `deploy/alert-relay.sh` runs on the owner's machine every 2 minutes
+  (`deploy/fenesh-alert-relay.timer`), reads them from the host's journal over SSH and sends them to the
+  owner's phone with `hermes send`. `FENESH_ALERT_WEBHOOK` is an optional extra channel.
 
 ## Models
 
