@@ -4,7 +4,7 @@
 // API reports it.
 
 import { DatabaseSync } from 'node:sqlite';
-import { config, isSystem1 } from './config.ts';
+import { config } from './config.ts';
 import { log } from './log.ts';
 import { medianCdf as medianOf, rawCdf, standardize, widen as widenCdf, type Pct } from './numeric.ts';
 import type { Question } from './metaculus.ts';
@@ -147,34 +147,19 @@ export function replay(statuses = ['submitted', 'dry_run']): { component: string
     const finalRound = Math.max(1, ...comps.filter((c) => c.round < 9).map((c) => c.round));
     const finalComps = comps.filter((c) => c.round === finalRound);
     const members = finalComps.map((c) => JSON.parse(c.forecast));
-    // The same ensemble without the System 1 member, to measure what that member adds.
-    const closed = finalComps.filter((c) => !isSystem1(c.model)).map((c) => JSON.parse(c.forecast));
     const market = comps.find((c) => c.model === 'market');
-    const gutC = comps.find((c) => c.model === 'laya-gut');
     if (!members.length) continue;
     if (q.type === 'binary') {
       const ps = members.map((m) => m.pYes).filter((p: unknown) => typeof p === 'number');
       if (!ps.length) continue;
       const mk = market ? JSON.parse(market.forecast).pYes : null;
       for (const [name, f] of Object.entries(BINARY_VARIANTS)) add(name, logScore(q, { pYes: f(ps, mk) }, r.resolution));
-      if (gutC) add('median + LAYA gut', logScore(q, { pYes: clip(med([...ps, JSON.parse(gutC.forecast).pYes]), 0.02) }, r.resolution));
-      // Paired comparison: both variants scored on exactly the questions where the System 1 answered.
-      const psClosed = closed.map((m) => m.pYes).filter((p: unknown) => typeof p === 'number');
-      if (psClosed.length && psClosed.length < ps.length) {
-        add('paired: median with System 1', logScore(q, { pYes: clip(med(ps), 0.02) }, r.resolution));
-        add('paired: median without System 1', logScore(q, { pYes: clip(med(psClosed), 0.02) }, r.resolution));
-      }
     } else if (q.type === 'multiple_choice') {
       const opts = q.options;
       const norm = (pr: Record<string, number>) => { const t = opts.reduce((a, o) => a + (pr[o] ?? 0), 0) || 1; return Object.fromEntries(opts.map((o) => [o, (pr[o] ?? 0) / t])); };
       const ms = members.map((m) => norm(m.probs ?? {}));
       add('mc mean (live)', logScore(q, { probs: Object.fromEntries(opts.map((o) => [o, Math.max(0.005, mean(ms.map((m) => m[o])))])) }, r.resolution));
       add('mc median', logScore(q, { probs: Object.fromEntries(opts.map((o) => [o, Math.max(0.005, med(ms.map((m) => m[o])))])) }, r.resolution));
-      const mc = closed.map((m) => norm(m.probs ?? {}));
-      if (mc.length && mc.length < ms.length) {
-        add('paired: mc mean with System 1', logScore(q, { probs: Object.fromEntries(opts.map((o) => [o, Math.max(0.005, mean(ms.map((m) => m[o])))])) }, r.resolution));
-        add('paired: mc mean without System 1', logScore(q, { probs: Object.fromEntries(opts.map((o) => [o, Math.max(0.005, mean(mc.map((m) => m[o])))])) }, r.resolution));
-      }
     } else if (q.scaling) {
       const cdfs = members.filter((m) => m.pcts?.length).map((m) => rawCdf(q.scaling!, m.pcts));
       if (!cdfs.length) continue;
@@ -182,11 +167,6 @@ export function replay(statuses = ['submitted', 'dry_run']): { component: string
         add(`numeric median widen ${w}${w === 1.15 ? ' (live)' : ''}`, logScore(q, { cdf: standardize(q.scaling, widenCdf(medianOf(cdfs), w)) }, r.resolution));
       }
       add('numeric mean widen 1.15', logScore(q, { cdf: standardize(q.scaling, widenCdf(cdfs[0].map((_, i) => mean(cdfs.map((c) => c[i]))), 1.15)) }, r.resolution));
-      const closedCdfs = closed.filter((m) => m.pcts?.length).map((m) => rawCdf(q.scaling!, m.pcts));
-      if (closedCdfs.length && closedCdfs.length < cdfs.length) {
-        add('paired: numeric median with System 1', logScore(q, { cdf: standardize(q.scaling, widenCdf(medianOf(cdfs), 1.15)) }, r.resolution));
-        add('paired: numeric median without System 1', logScore(q, { cdf: standardize(q.scaling, widenCdf(medianOf(closedCdfs), 1.15)) }, r.resolution));
-      }
     }
   }
   return [...acc.entries()].map(([component, v]) => ({ component, n: v.length, meanLog: mean(v) })).sort((a, b) => a.component.localeCompare(b.component));

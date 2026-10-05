@@ -6,7 +6,7 @@
 //   report [--no-sync] [--backtest]  fetch resolutions and score every model and the submitted forecast
 //   backtest <census.json> [--models a,b] [--from YYYY-MM-DD] [--n 20] [--types binary,numeric] [--concurrency 3] [--no-supervisor]
 
-import { config, isSystem1 } from './config.ts';
+import { config } from './config.ts';
 import { log } from './log.ts';
 import { getPost, me, postComment, postForecast, type Question } from './metaculus.ts';
 import { Budget, runQuestion } from './pipeline.ts';
@@ -58,9 +58,7 @@ async function main() {
     const { loadCensus, selectItems, runBacktest } = await import('./backtest.ts');
     const flag = (name: string) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
     const opts = {
-      // LAYA's cutoff (its release) postdates every resolved question, and its calibration was fitted on
-      // these same census questions, so it joins a backtest only when named.
-      models: (flag('models') ?? config.forecasters.filter((m) => !isSystem1(m)).join(',')).split(','),
+      models: (flag('models') ?? config.forecasters.join(',')).split(','),
       from: flag('from'), n: Number(flag('n') ?? 20), types: flag('types')?.split(','),
       concurrency: Number(flag('concurrency') ?? 3), supervisor: !args.includes('--no-supervisor'), seed: Number(flag('seed') ?? 7),
     };

@@ -18,8 +18,6 @@ const POLL = 'fenesh-poll';
 const QUESTION = 'fenesh-question';
 const EVALUATE = 'fenesh-evaluate';
 
-// No System 1 vote on the lean path: with three members, LAYA's near-base-rate vote would often be the
-// median itself. Lean runs still archive the LAYA gut read.
 const leanForecasters = (process.env.FENESH_LEAN_FORECASTERS ?? 'gpt-6.1-sol,opus-5.5,fable-5.1').split(',');
 const dailyBudget = Number(process.env.FENESH_DAILY_BUDGET_USD ?? 60);
 const safetyLeadMs = 25 * 60_000;

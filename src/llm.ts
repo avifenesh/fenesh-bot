@@ -1,7 +1,6 @@
 // Model calls through Amazon Bedrock with a bearer key.
 // Claude goes through the Converse API; OpenAI models go through the OpenAI-compatible Responses API,
-// on Mantle (plain openai.* ids) or on bedrock-runtime (global.openai.* profiles). LAYA is not an LLM
-// and has its own client (src/laya.ts).
+// on Mantle (plain openai.* ids) or on bedrock-runtime (global.openai.* profiles).
 
 import { config, model, type ModelSpec } from './config.ts';
 import { log } from './log.ts';
@@ -180,7 +179,6 @@ async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): P
 
 export async function call(modelKey: string, prompt: string, o: CallOptions = {}): Promise<CallResult> {
   const spec = model(modelKey);
-  if (spec.transport === 'laya') throw new Error(`${modelKey} is not a language model; use src/laya.ts`);
   const t0 = Date.now();
   const r = spec.transport === 'converse' ? await callConverse(spec, prompt, o) : await callResponses(spec, prompt, o);
   log.info('llm', { model: spec.key, label: o.label, ms: Date.now() - t0, in: r.usage.input, out: r.usage.output, usd: +r.usage.costUsd.toFixed(4), tools: r.toolCalls });
