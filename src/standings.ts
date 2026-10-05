@@ -7,6 +7,7 @@ import { config } from './config.ts';
 import { db, fetchPostJson, logScore, report } from './evaluate.ts';
 import { log } from './log.ts';
 import type { Question } from './metaculus.ts';
+import { standardize } from './numeric.ts';
 
 const RATES = JSON.parse(readFileSync(new URL('./base-rates.json', import.meta.url), 'utf8'));
 const BASE_RATE = RATES.overall.yes / RATES.overall.n; // share of past tournament yes/no questions that resolved Yes
@@ -47,13 +48,19 @@ export async function standingsReport(newlyResolved: number): Promise<string> {
   const peers = rows.map((r) => r.peer_score).filter((x): x is number => typeof x === 'number');
   lines.push(peers.length ? `Peer score: mean ${signed(mean(peers))} over ${peers.length} questions (sum ${signed(peers.reduce((a, b) => a + b, 0))}).` : 'Peer score: not computed by Metaculus yet.');
 
-  // One leaderboard line per project the resolved questions belong to.
+  // One leaderboard line per project the resolved questions belong to: tournaments list themselves under
+  // `tournament`, MiniBench under `question_series` and `default_project` (as in src/metaculus.ts).
   const projects = new Map<number, { name: string }>();
+  const seenPosts = new Set<number>();
   for (const r of rows.slice(-20)) {
-    if (projects.size >= 3) break;
+    if (projects.size >= 4 || seenPosts.size >= 5) break;
+    if (seenPosts.has(r.post_id)) continue;
+    seenPosts.add(r.post_id);
     try {
-      const p = (await fetchPostJson(r.post_id)).projects?.default_project;
-      if (p?.id && !projects.has(p.id)) projects.set(p.id, { name: p.name ?? p.slug ?? String(p.id) });
+      const pr = (await fetchPostJson(r.post_id)).projects ?? {};
+      for (const p of [...(pr.tournament ?? []), ...(pr.question_series ?? []), pr.default_project]) {
+        if (p?.id && p.type !== 'site_main' && p.type !== 'category' && !projects.has(p.id)) projects.set(p.id, { name: p.name ?? p.slug ?? String(p.id) });
+      }
     } catch { /* leaderboard lines are best effort */ }
   }
   for (const [id, p] of projects) lines.push(await leaderboardLine(id, p.name));
@@ -75,7 +82,15 @@ export async function standingsReport(newlyResolved: number): Promise<string> {
       const sub = p?.probability_yes_per_category ? { probs: p.probability_yes_per_category } : { cdf: p?.continuous_cdf };
       return logScore(q, sub, r.resolution);
     }).filter((x): x is number => x != null);
-    const baseline = label === 'Multiple choice' ? `uniform ${f2(mean(rs.map((r) => -Math.log(JSON.parse(r.question).options.length))))}` : 'uniform 0.00';
+    // The uniform baseline is scored the same way, so out-of-range resolutions count its tail mass.
+    const uniform = rs.map((r) => {
+      const q: Question = JSON.parse(r.question);
+      if (q.type === 'multiple_choice') return logScore(q, { probs: Object.fromEntries(q.options.map((o) => [o, 1 / q.options.length])) }, r.resolution);
+      if (!q.scaling) return null;
+      const n = q.scaling.cdfSize;
+      return logScore(q, { cdf: standardize(q.scaling, Array.from({ length: n }, (_, i) => i / (n - 1))) }, r.resolution);
+    }).filter((x): x is number => x != null);
+    const baseline = `uniform ${f2(mean(uniform))}`;
     lines.push(`${label} (${rs.length}): log score ${f2(mean(scores))} vs ${baseline}.`);
   }
 
