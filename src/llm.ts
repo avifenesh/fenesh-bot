@@ -2,6 +2,7 @@
 // Claude goes through the Converse API; OpenAI models go through the OpenAI-compatible Responses API,
 // on Mantle (plain openai.* ids) or on bedrock-runtime (global.openai.* profiles).
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { config, model, type ModelSpec } from './config.ts';
 import { log } from './log.ts';
 
@@ -210,6 +211,15 @@ async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): P
   }
 }
 
+// Run deadline: every model call inside withDeadline() (fallbacks included) stops at it, so a run can
+// never outlive the window in which the queue treats its question as in flight (src/store.ts inFlight).
+const deadlineStore = new AsyncLocalStorage<number>();
+export const RUN_DEADLINE_MS = 40 * 60_000;
+export function withDeadline<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+  return deadlineStore.run(Date.now() + ms, fn);
+}
+function timeLeft(): number { const d = deadlineStore.getStore(); return d == null ? Infinity : d - Date.now(); }
+
 const clientError = (e: any) => /^bedrock 4\d\d/.test(e?.message ?? '') && !/^bedrock 429/.test(e.message);
 
 // Circuit breaker: a model that failed two calls in a row is skipped for 15 minutes, so an outage costs
@@ -231,8 +241,11 @@ export async function call(modelKey: string, prompt: string, o: CallOptions = {}
   if (modelDown(modelKey)) lastErr = new Error(`${modelKey} is skipped after repeated failures`);
   else for (let attempt = 0; attempt < 2; attempt++) {
     const t0 = Date.now();
+    const left = timeLeft();
+    if (left < 5_000) { lastErr = new Error('run deadline passed'); break; }
     try {
-      const r = spec.transport === 'converse' ? await callConverse(spec, prompt, o) : await callResponses(spec, prompt, o);
+      const timed = { ...o, timeoutMs: Math.min(o.timeoutMs ?? 15 * 60_000, left) };
+      const r = spec.transport === 'converse' ? await callConverse(spec, prompt, timed) : await callResponses(spec, prompt, timed);
       log.info('llm', { model: spec.key, label: o.label, ms: Date.now() - t0, in: r.usage.input, cached: r.usage.cacheRead ?? 0, out: r.usage.output, usd: +r.usage.costUsd.toFixed(4), tools: r.toolCalls });
       for (const fn of UsageSink) fn(spec.key, o.label ?? '', r.usage);
       if (!r.text.trim() && r.usage.output === 0) throw new Error(`${spec.key} returned an empty reply`);
@@ -247,7 +260,7 @@ export async function call(modelKey: string, prompt: string, o: CallOptions = {}
   }
   const next = o.fallback === null ? undefined : (o.fallback ?? spec.fallback);
   const tried = [...((o as any)._tried ?? []), modelKey];
-  if (next && !tried.includes(next)) {
+  if (next && !tried.includes(next) && timeLeft() >= 5_000) {
     log.warn('llm fallback', { from: spec.key, to: next, label: o.label });
     // The fallback's own fallback is next in line; a model already tried is never tried again.
     return call(next, prompt, { ...o, fallback: undefined, _tried: tried } as CallOptions);

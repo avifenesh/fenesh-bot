@@ -6,6 +6,7 @@
 //   report [--no-sync] [--backtest]  fetch resolutions and score every model and the submitted forecast
 //   backtest <census.json> [--models a,b] [--from YYYY-MM-DD] [--n 20] [--types binary,numeric] [--concurrency 3] [--no-supervisor]
 
+import { RUN_DEADLINE_MS, withDeadline } from './llm.ts';
 import { config } from './config.ts';
 import { log } from './log.ts';
 import { getPost, me, postComment, postForecast, type Question } from './metaculus.ts';
@@ -17,7 +18,13 @@ export async function forecastAndSubmit(q: Question, opts: { forecasters?: strin
   const budget = new Budget(config.maxCostPerQuestion);
   let r;
   try {
-    r = await runQuestion(q, opts, budget);
+    r = await withDeadline(RUN_DEADLINE_MS, () => runQuestion(q, opts, budget));
+    // Another run (the safety job) may have submitted while this one worked; one forecast per question.
+    if (!config.dryRun && submitted(q.questionId)) {
+      finishRun(id, 'superseded', r, 'another run submitted first');
+      log.warn('superseded', { q: q.questionId, run: id });
+      return `${q.title}\n  -> superseded: another run submitted first`;
+    }
     await postForecast(q.questionId, r.payload);
   } catch (e: any) {
     // Record what the failed attempt spent so the daily budget sees it.

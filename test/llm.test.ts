@@ -2,7 +2,7 @@
 // model answers; a refused request (4xx) is not retried.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MODELS } from '../src/config.ts';
-import { call, effortFor, requestCost } from '../src/llm.ts';
+import { call, effortFor, requestCost, withDeadline } from '../src/llm.ts';
 import { dedupeAnswers } from '../src/pipeline.ts';
 
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -111,5 +111,16 @@ describe('model calls', () => {
     const f = (model: string, slot: string, pYes: number) => ({ model, slot, ok: true, costUsd: 0, pYes });
     const out = dedupeAnswers([f('gpt-6-sol', 'gpt-6-astra', 0.3), f('gpt-6-sol', 'gpt-6.1-sol', 0.4), f('opus-5.5', 'opus-5.5', 0.5)]);
     expect(out.map((x) => x.ok)).toEqual([true, false, true]);
+  });
+
+  it('stops at the run deadline, fallbacks included', async () => {
+    const hang = (_u: string, init: any) => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
+    const fetch = vi.fn().mockImplementation(hang);
+    vi.stubGlobal('fetch', fetch);
+    const t0 = Date.now();
+    await expect(withDeadline(500, () => call('opus-5.5', 'q', { label: 't' }))).rejects.toThrow();
+    expect(Date.now() - t0).toBeLessThan(2000);
+    // No fallback is started once the deadline has passed.
+    expect(fetch.mock.calls.length).toBeLessThanOrEqual(2);
   });
 });
