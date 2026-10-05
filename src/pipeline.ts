@@ -113,7 +113,7 @@ const cited = (brief: string) => countedSources(citedUrls(brief)).length;
 
 async function writeBrief(q: Question, items: Evidence[], b: Budget): Promise<string> {
   try {
-    const opts = { label: 'research', effort: 'medium', tools: researchTools(), maxToolRounds: 14, maxTokens: 24000 };
+    const opts = { label: 'research', effort: 'medium', tools: researchTools(), maxToolRounds: 14, maxTokens: 24000, fallback: config.fallbackModel };
     const r = await call(config.researchModel, researchPrompt(q, digest(items), MIN_WEB_SOURCES), opts);
     b.add(r.usage.costUsd);
     let brief = r.text.trim();

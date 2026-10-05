@@ -22,6 +22,7 @@ export interface CallOptions {
   maxToolRounds?: number;
   timeoutMs?: number;
   label?: string; // what the call is for, logged with usage
+  fallback?: string; // model to try once if this one keeps failing
 }
 
 export interface CallResult { text: string; usage: Usage; model: string; toolCalls: number }
@@ -156,6 +157,11 @@ async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): P
     input += d.usage?.input_tokens ?? 0;
     output += d.usage?.output_tokens ?? 0;
     const items: any[] = d.output ?? [];
+    // A 200 can still carry a failed or cut-off response; surface it instead of returning nothing.
+    if (d.status === 'failed') throw new Error(`${spec.key} response failed: ${JSON.stringify(d.error ?? {}).slice(0, 300)}`);
+    if (d.status === 'incomplete' && !items.some((i) => i.type === 'message' || i.type === 'function_call')) {
+      throw new Error(`${spec.key} response incomplete: ${JSON.stringify(d.incomplete_details ?? {}).slice(0, 200)}`);
+    }
     const calls = items.filter((i) => i.type === 'function_call');
     if (calls.length && round <= maxRounds) {
       // Stateless: send back everything the model produced plus our tool outputs.
@@ -177,18 +183,37 @@ async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): P
   }
 }
 
+const clientError = (e: any) => /^bedrock 4\d\d/.test(e?.message ?? '') && !/^bedrock 429/.test(e.message);
+
+// One retry for a failed or empty reply, then the fallback model if one is given. Provider-side
+// hiccups (503s, 200s with no output) come in bursts; a request the provider refuses (4xx) is not retried.
 export async function call(modelKey: string, prompt: string, o: CallOptions = {}): Promise<CallResult> {
   const spec = model(modelKey);
-  const t0 = Date.now();
-  const r = spec.transport === 'converse' ? await callConverse(spec, prompt, o) : await callResponses(spec, prompt, o);
-  log.info('llm', { model: spec.key, label: o.label, ms: Date.now() - t0, in: r.usage.input, out: r.usage.output, usd: +r.usage.costUsd.toFixed(4), tools: r.toolCalls });
-  for (const fn of UsageSink) fn(spec.key, o.label ?? '', r.usage);
-  return r;
+  let lastErr: any;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const t0 = Date.now();
+    try {
+      const r = spec.transport === 'converse' ? await callConverse(spec, prompt, o) : await callResponses(spec, prompt, o);
+      log.info('llm', { model: spec.key, label: o.label, ms: Date.now() - t0, in: r.usage.input, out: r.usage.output, usd: +r.usage.costUsd.toFixed(4), tools: r.toolCalls });
+      for (const fn of UsageSink) fn(spec.key, o.label ?? '', r.usage);
+      if (!r.text.trim() && r.usage.output === 0) throw new Error(`${spec.key} returned an empty reply`);
+      return r;
+    } catch (e: any) {
+      lastErr = e;
+      log.warn('llm call failed', { model: spec.key, label: o.label, attempt, ms: Date.now() - t0, err: String(e?.message ?? e).slice(0, 300) });
+      if (clientError(e)) break;
+    }
+  }
+  if (o.fallback && o.fallback !== modelKey) {
+    log.warn('llm fallback', { from: spec.key, to: o.fallback, label: o.label });
+    return call(o.fallback, prompt, { ...o, fallback: undefined });
+  }
+  throw lastErr;
 }
 
 // The fast steps (plan, classification, market match, repair, wiki) run on one model at low effort.
 export function fast(prompt: string, o: CallOptions = {}): Promise<CallResult> {
-  return call(config.fastModel, prompt, { effort: config.fastEffort, ...o });
+  return call(config.fastModel, prompt, { effort: config.fastEffort, fallback: config.fallbackModel, ...o });
 }
 
 // Pull the last JSON object out of a model reply (models are told to end with one).
