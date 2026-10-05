@@ -12,13 +12,11 @@ Metaculus forecasting bot (bot user `fenesh-bot`, id 309777). TypeScript run dir
   Mantle; never `us.` ids. Exception (owner, 2026-10-04): GPT-6.1 Sol runs only as the profile
   `global.openai.gpt-6.1-sol` on bedrock-runtime; the bare id is refused there.
 - No Grok model and no X / xAI API at all (owner decision 2026-10-04). No gpt-oss either. The ensemble
-  is GPT-6 Astra, GPT-6.1 Sol, Opus 5.5, Fable 5.1 plus LAYA as the System 1 vote (owner, 2026-10-04):
-  `convaiinnovations/laya`, multilingual checkpoint, a non-generative decision model that runs on CPU
-  in the loopback sidecar (`sidecar/`, `deploy/fenesh-laya.service`), never on Bedrock. Its
-  probabilities always go through `src/laya-calibration.json`; refit with `sidecar/calibrate.py` after
-  rerunning the census evals, and keep the pinned revision in the unit and the calibration in step.
-  Fine-tuning LAYA is a later lever. The park-predictor lane allowed copying `tools/laya_ft_v5.py`;
-  its weights, its data (`~/park-predictor-data`) and the 5090 lock are off limits.
+  is GPT-6 Astra, GPT-6.1 Sol, Opus 5.5 and Fable 5.1.
+- LAYA (`convaiinnovations/laya`) was tried as a System 1 vote and deleted on the owner's call
+  (2026-10-05): zero-shot it had no signal on 1,002 resolved tournament questions, and under a temporal
+  split neither its frozen embeddings plus metadata nor its calibrated vote beat the base rate. Do not
+  re-add it, or another encoder-only System 1, without new evidence.
 - The fast steps (plan, base-rate class, market match, JSON repair, wiki) run on GPT-6.1 Sol at low
   effort through `fast()` in `src/llm.ts`.
 - Research sources plug into `src/research/sources.ts`; add one there only when the owner approves it.

@@ -96,7 +96,9 @@ function normalize(post: any, q: any, group?: any): Question {
     resolveTime: q.scheduled_resolve_time ?? post.scheduled_resolve_time,
     scaling: scalingOf(q),
     weight: q.question_weight ?? 1,
-    tournaments: (post.projects?.tournament ?? []).map((t: any) => t.slug ?? String(t.id)),
+    // Tournaments list themselves under `tournament`; MiniBench under `question_series` and `default_project`.
+    tournaments: [...new Set([...(post.projects?.tournament ?? []), ...(post.projects?.question_series ?? []), post.projects?.default_project]
+      .filter((t: any) => t && t.type !== 'site_main').map((t: any) => t.slug ?? String(t.id)))],
     alreadyForecast: !!q.my_forecasts?.latest,
     url: `https://www.metaculus.com/questions/${post.id}/`,
   };

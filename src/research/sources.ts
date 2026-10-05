@@ -93,7 +93,6 @@ async function askNewsSearch(query: string, n = 8, days = 30): Promise<Evidence[
   const day = new Date().toISOString().slice(0, 10);
   if (day !== askDay) { askDay = day; askUsed = 0; }
   if (askUsed >= Number(process.env.FENESH_ASKNEWS_DAILY ?? 80)) throw new Error('asknews: daily search cap reached');
-  askUsed++;
   const u = new URL('https://api.asknews.app/v1/news/search');
   const params: Record<string, string> = { query, n_articles: String(n), return_type: 'dicts', method: 'nl' };
   const asOf = asOfMs();
@@ -102,7 +101,10 @@ async function askNewsSearch(query: string, n = 8, days = 30): Promise<Evidence[
   u.search = new URLSearchParams(params).toString();
   const r = await get(u.toString(), { headers: { Authorization: `Bearer ${key}` }, timeoutMs: 60_000 });
   if (r.status === 429) { cool('asknews'); throw new Error('asknews HTTP 429'); }
+  // 402: the wallet is empty. Back off for hours instead of failing on every question.
+  if (r.status === 402) { cool('asknews', 360); throw new Error('asknews HTTP 402: wallet empty'); }
   if (r.status >= 400) throw new Error(`asknews HTTP ${r.status}: ${r.text.slice(0, 200)}`);
+  askUsed++;
   const d = JSON.parse(r.text);
   return (d.as_dicts ?? [])
     // Never let an article from after the as-of moment into a backtest.
