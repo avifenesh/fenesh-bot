@@ -16,10 +16,11 @@ trap 'rm -rf "$TMP"' EXIT
 git archive --format=tar.gz -o "$TMP/fenesh-bot-$REV.tar.gz" HEAD
 TOOLS=${FENESH_TOOLS_DIR:-$HOME/projects/tools}
 WEBSEARCH_BIN="$TOOLS/target/x86_64-unknown-linux-gnu/release/harness-websearch-cli"
-if [ ! -x "$WEBSEARCH_BIN" ]; then
-  # Ubuntu 24.04 hosts have glibc 2.39; a native build on a newer rig would not run there.
-  (cd "$TOOLS" && cargo zigbuild --release -p harness-websearch --bin harness-websearch-cli --target x86_64-unknown-linux-gnu.2.39)
-fi
+# Ubuntu 24.04 hosts have glibc 2.39; a native build on a newer rig would not run there. zigbuild is
+# incremental, so it always runs, and the result is checked before it ships.
+(cd "$TOOLS" && cargo zigbuild --release -p harness-websearch --bin harness-websearch-cli --target x86_64-unknown-linux-gnu.2.39)
+NEED=$(objdump -T "$WEBSEARCH_BIN" | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1)
+[ "$(printf '%s\nGLIBC_2.39\n' "$NEED" | sort -V | tail -1)" = GLIBC_2.39 ] || { echo "websearch CLI needs $NEED, host has 2.39" >&2; exit 1; }
 if [ -z "$ENV_FILE" ]; then
   ENV_FILE="$TMP/env"
   umask 077

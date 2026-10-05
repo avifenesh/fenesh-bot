@@ -150,7 +150,7 @@ const asknews: ResearchSource = {
 //
 // The owner's harness-websearch CLI (github.com/avifenesh/tools) runs a keyless engine chain with
 // fallback: Exa, Parallel, Mojeek, Marginalia, Wikipedia. JSON-RPC over stdin, one request per call.
-// Without the binary (a dev machine), the direct Exa call below is used.
+// Without the binary (a dev machine), or when it fails, the direct Exa call below is used.
 
 const WEBSEARCH_BIN = process.env.FENESH_WEBSEARCH_BIN ?? '/usr/local/bin/harness-websearch-cli';
 const ENGINE_ORDER = ['exa', 'parallel', 'mojeek', 'marginalia', 'wikipedia'];
@@ -177,8 +177,14 @@ export async function harnessSearch(query: string, n = 8, bin = WEBSEARCH_BIN): 
   }));
 }
 
-function webSearch(query: string, n: number): Promise<Evidence[]> {
-  return existsSync(WEBSEARCH_BIN) ? harnessSearch(query, n) : exaSearch(query, n);
+async function webSearch(query: string, n: number): Promise<Evidence[]> {
+  if (!existsSync(WEBSEARCH_BIN)) return exaSearch(query, n);
+  try {
+    return await harnessSearch(query, n);
+  } catch (e: any) {
+    log.warn('websearch CLI failed, using Exa directly', { err: e.message });
+    return exaSearch(query, n);
+  }
 }
 
 
