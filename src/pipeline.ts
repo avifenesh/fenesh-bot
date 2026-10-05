@@ -8,7 +8,8 @@ import { log } from './log.ts';
 import type { ForecastPayload, Question } from './metaculus.ts';
 import { checkCdf, medianCdf, quantilesOf, rawCdf, standardize, widen, type Pct } from './numeric.ts';
 import { forecastPrompt, planPrompt, researchPrompt, supervisorPrompt } from './prompts.ts';
-import { SOURCES, type Evidence, type ResearchPlan } from './research/sources.ts';
+import { MIN_WEB_SOURCES, SOURCES, type Evidence, type ResearchPlan } from './research/sources.ts';
+import { citedUrls, countedSources } from './research/validity.ts';
 import { classify, matchMarket, type MarketMatch } from './priors.ts';
 import { wikiTool } from './wiki.ts';
 
@@ -34,6 +35,7 @@ export interface RunResult {
   payload: ForecastPayload;
   headline: string; // human summary of the final forecast
   market: MarketMatch | null; // exact-match market, if one was found
+  research: { webSources: number; citedSources: number }; // valid sources found by web search / cited in the brief
   marketWeight: number; // weight the market got in the binary aggregate
   baseRate?: string;
   shadow: ForecasterOutput[]; // extra models on the same brief, archived and scored, never submitted
@@ -107,14 +109,31 @@ function digest(items: Evidence[], maxChars = 30_000): string {
   return s || '(nothing found automatically)';
 }
 
+const cited = (brief: string) => countedSources(citedUrls(brief)).length;
+
 async function writeBrief(q: Question, items: Evidence[], b: Budget): Promise<string> {
   try {
-    const r = await call(config.researchModel, researchPrompt(q, digest(items)), {
-      label: 'research', effort: 'medium', tools: researchTools(), maxToolRounds: 14, maxTokens: 24000,
-    });
+    const opts = { label: 'research', effort: 'medium', tools: researchTools(), maxToolRounds: 14, maxTokens: 24000 };
+    const r = await call(config.researchModel, researchPrompt(q, digest(items), MIN_WEB_SOURCES), opts);
     b.add(r.usage.costUsd);
-    if (r.text.trim().length > 200) return r.text.trim();
-    throw new Error('empty brief');
+    let brief = r.text.trim();
+    if (brief.length <= 200) throw new Error('empty brief');
+    // Enforce the source floor once: a brief that cites too few valid sources goes back for a revision
+    // with web search. Live runs only; backtests have no web search.
+    const n = cited(brief);
+    if (n < MIN_WEB_SOURCES && asOfMs() == null && b.left() > b.cap * 0.5) {
+      log.info('brief under the source floor, revising', { q: q.questionId, cited: n, floor: MIN_WEB_SOURCES });
+      const rev = await call(config.researchModel, `${researchPrompt(q, digest(items), MIN_WEB_SOURCES)}
+
+Your first draft is below. It cites only ${n} distinct valid sources; the rule is at least ${MIN_WEB_SOURCES} (real publishers, official sites or data providers, at most 3 per domain; no search pages or copies of unknown origin). Use web_search to find more, check the ones that matter with fetch_page, and return the complete revised brief with every source URL.
+
+<draft>
+${brief}
+</draft>`, { ...opts, label: 'research-revise' });
+      b.add(rev.usage.costUsd);
+      if (rev.text.trim().length > 200 && cited(rev.text) > n) brief = rev.text.trim();
+    }
+    return brief;
   } catch (e: any) {
     log.warn('research failed, forecasting from the raw digest', { q: q.questionId, err: e.message });
     return `(The analyst step failed; raw search results follow.)\n${digest(items)}`;
@@ -264,6 +283,8 @@ function buildComment(q: Question, r: Omit<RunResult, 'comment'>): string {
     `Aggregation: ${q.type === 'binary' ? `median of model probabilities, kept within ${config.binaryClip * 100}-${100 - config.binaryClip * 100}%` : q.type === 'multiple_choice' ? 'mean of model probabilities per option' : `pointwise median of model CDFs, widened ${Math.round((Number(process.env.FENESH_NUMERIC_WIDEN ?? 1.15) - 1) * 100)}% around the median`}.`,
     '',
     ...(r.market ? [`Matching market: ${r.market.quote.question} on ${r.market.quote.venue} at ${(r.market.quote.probability * 100).toFixed(1)}% (${r.market.quote.url}), weight ${r.marketWeight}.`, ''] : []),
+    `Research: ${r.research.webSources} valid web sources found; the brief cites ${r.research.citedSources}.`,
+    '',
     'Model forecasts:',
     ...r.forecasts.map((f) => `- ${describe(q, f)}${f.summary ? `. ${f.summary}` : ''}`),
   ];
@@ -275,7 +296,8 @@ function buildComment(q: Question, r: Omit<RunResult, 'comment'>): string {
 export async function runQuestion(q: Question, opts: { forecasters?: string[]; supervisor?: boolean } = {}, b = new Budget(config.maxCostPerQuestion)): Promise<RunResult> {
   const plan = await makePlan(q, b);
   const [evidence, cls, market] = await Promise.all([gather(q, plan), classify(q), matchMarket(q, plan.marketQueries)]);
-  log.info('gathered', { q: q.questionId, items: evidence.length, market: market ? `${market.quote.venue} ${market.quote.probability} c=${market.confidence}` : null, bySource: Object.fromEntries(SOURCES.map((s) => [s.name, evidence.filter((e) => e.source === s.name).length])) });
+  const webSources = countedSources(evidence.filter((e) => e.source === 'web' || e.source === 'exa').map((e) => e.url ?? '')).length;
+  log.info('gathered', { q: q.questionId, items: evidence.length, webSources, market: market ? `${market.quote.venue} ${market.quote.probability} c=${market.confidence}` : null, bySource: Object.fromEntries(SOURCES.map((s) => [s.name, evidence.filter((e) => e.source === s.name).length])) });
   const brief = await writeBrief(q, evidence, b);
 
   const priors = [
@@ -316,6 +338,6 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
   }
   const { payload, headline, marketWeight: mw } = aggregate(q, forecasts, market);
   const base = { plan, evidence, brief, round1, addendum, forecasts, payload, headline, costUsd: b.spent, disagreement: dis,
-    market, marketWeight: mw, baseRate: cls.baseRateText, shadow };
+    research: { webSources, citedSources: cited(brief) }, market, marketWeight: mw, baseRate: cls.baseRateText, shadow };
   return { ...base, comment: buildComment(q, base) };
 }

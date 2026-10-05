@@ -10,6 +10,7 @@ import { alert } from '../alert.ts';
 import { asOfMs, liveOnly, nowMs } from '../asof.ts';
 import { config } from '../config.ts';
 import { fetchPage, get, getJson, htmlToText } from './http.ts';
+import { countedSources, validSource } from './validity.ts';
 
 export interface Evidence {
   source: string;
@@ -189,15 +190,24 @@ export async function harnessSearch(query: string, n = 8, bin = WEBSEARCH_BIN): 
   }));
 }
 
+// Only valid sources come back (src/research/validity.ts): spam mirrors and search pages never reach the
+// analyst or the forecasters.
 async function webSearch(query: string, n: number): Promise<Evidence[]> {
-  if (!existsSync(WEBSEARCH_BIN)) return exaSearch(query, n);
-  try {
-    return await harnessSearch(query, n);
-  } catch (e: any) {
-    log.warn('websearch CLI failed, using Exa directly', { err: e.message });
-    return exaSearch(query, n);
+  let items: Evidence[];
+  if (!existsSync(WEBSEARCH_BIN)) items = await exaSearch(query, n);
+  else {
+    try {
+      items = await harnessSearch(query, n);
+    } catch (e: any) {
+      log.warn('websearch CLI failed, using Exa directly', { err: e.message });
+      items = await exaSearch(query, n);
+    }
   }
+  return items.filter(validSource);
 }
+
+// Research floor: every live question gets at least this many valid web sources (at most 3 per domain).
+export const MIN_WEB_SOURCES = Number(process.env.FENESH_MIN_WEB_SOURCES ?? 10);
 
 
 async function exaSearch(query: string, n = 8): Promise<Evidence[]> {
@@ -231,9 +241,21 @@ async function exaSearch(query: string, n = 8): Promise<Evidence[]> {
 
 const web: ResearchSource = {
   name: 'web',
-  async gather(_q, plan) {
-    const res = await Promise.allSettled(plan.queries.slice(0, 5).map((q) => webSearch(q, 6)));
-    return res.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+  async gather(q, plan) {
+    if (asOfMs() != null) return []; // web search cannot answer as of a past date
+    const res = await Promise.allSettled(plan.queries.slice(0, 5).map((x) => webSearch(x, 8)));
+    const found = res.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+    // Top up with broader queries until the floor of valid sources is met.
+    const year = new Date(nowMs()).getUTCFullYear();
+    const extra = [q.title, `${q.title} latest news`, `${q.title} ${year}`, q.resolutionCriteria.split(/[.\n]/)[0].slice(0, 120), q.groupTitle ?? '']
+      .map((x) => x.trim()).filter((x, i, a) => x.length > 8 && !plan.queries.includes(x) && a.indexOf(x) === i);
+    for (const x of extra) {
+      if (countedSources(found.map((e) => e.url ?? '')).length >= MIN_WEB_SOURCES) break;
+      try { found.push(...(await webSearch(x, 10))); } catch (e: any) { log.warn('web top-up failed', { err: e.message }); }
+    }
+    const n = countedSources(found.map((e) => e.url ?? '')).length;
+    if (n < MIN_WEB_SOURCES) log.warn('fewer valid web sources than the floor', { q: q.questionId, found: n, floor: MIN_WEB_SOURCES });
+    return found;
   },
   tools: () => [{
     name: 'web_search',
