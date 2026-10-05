@@ -38,7 +38,9 @@ for line in open(sys.argv[1]):
     except (ValueError, TypeError):
         continue
     if isinstance(m, dict) and m.get("msg") == "alert" and m.get("text"):
-        print(f"{e['__CURSOR']}\t{m['text']}".replace("\n", " "))
+        # One alert per line: escape backslashes and line breaks; the sender expands them back.
+        text = m["text"].replace("\\", "\\\\").replace("\n", "\\n").replace("\t", " ")
+        print(f"{e['__CURSOR']}\t{text}")
 print(f"END\t{last}")
 PY
 trap 'rm -f "$ENTRIES" "$ENTRIES.alerts"' EXIT
@@ -48,6 +50,6 @@ while IFS=$'\t' read -r cursor text; do
     break
   fi
   # Stop at the first failed send; the cursor stays before it and the next run retries.
-  hermes send --to "$TARGET" --subject "fenesh-bot" --quiet "$text"
+  hermes send --to "$TARGET" --subject "fenesh-bot" --quiet "$(printf '%b' "$text")"
   printf '%s\n' "$cursor" > "$CURSOR_FILE"
 done < "$ENTRIES.alerts"

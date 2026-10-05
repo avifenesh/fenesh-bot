@@ -4,6 +4,7 @@
 //   poll                        enqueue open questions once
 //   status                      recent runs and spend
 //   report [--no-sync] [--backtest]  fetch resolutions and score every model and the submitted forecast
+//   standings [--send]          sync resolutions and print the standings report (--send: also to the owner's phone)
 //   backtest <census.json> [--models a,b] [--from YYYY-MM-DD] [--n 20] [--types binary,numeric] [--concurrency 3] [--no-supervisor]
 
 import { RUN_DEADLINE_MS, withDeadline } from './llm.ts';
@@ -89,6 +90,13 @@ async function main() {
     const { replay } = await import('./evaluate.ts');
     console.log('aggregation variants replayed on the same questions:');
     console.table(replay(statuses).map((x) => ({ variant: x.component, n: x.n, meanLogScore: +x.meanLog.toFixed(4) })));
+  } else if (cmd === 'standings') {
+    const { syncOutcomes } = await import('./evaluate.ts');
+    const { standingsReport } = await import('./standings.ts');
+    const n = await syncOutcomes();
+    const text = await standingsReport(n);
+    console.log(text);
+    if (args.includes('--send')) { const { alert } = await import('./alert.ts'); await alert(text, { kind: 'report' }); }
   } else if (cmd === 'status') {
     console.log(await me());
     console.table(recent(25));

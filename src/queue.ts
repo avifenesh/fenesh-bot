@@ -12,6 +12,7 @@ import { getPost, openQuestions, type Question } from './metaculus.ts';
 import { forecastAndSubmit } from './cli.ts';
 import { inFlight, markInterrupted, spentSince, submitted } from './store.ts';
 import { syncOutcomes } from './evaluate.ts';
+import { standingsReport } from './standings.ts';
 import { refreshDigests, writeOutcomes } from './wiki.ts';
 
 const connection = { addresses: [{ host: config.valkey.host, port: config.valkey.port }] };
@@ -116,6 +117,10 @@ export async function startWorker(): Promise<void> {
     if (job.name === 'digest') return refreshDigests();
     const n = await syncOutcomes();
     writeOutcomes();
+    // New resolutions: the owner gets the standings on his phone.
+    if (n > 0) {
+      try { await alert(await standingsReport(n), { kind: 'report' }); } catch (e: any) { log.warn('standings report failed', { err: e.message }); }
+    }
     return n;
   }, { connection, concurrency: 1, lockDuration: 30 * 60_000 });
   const questionWorker = new Worker(QUESTION, processQuestion, {
