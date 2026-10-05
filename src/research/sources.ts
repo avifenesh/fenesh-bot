@@ -87,6 +87,13 @@ const gdelt: ResearchSource = {
 
 // Searches cost credits, so a daily cap guards the wallet (FENESH_ASKNEWS_DAILY, default 80).
 let askDay = '', askUsed = 0;
+// A slow or failing AskNews must not hold up a question: each search times out after
+// FENESH_ASKNEWS_TIMEOUT_MS (default 15 s), and two failures in a row skip AskNews for 30 minutes.
+const ASK_TIMEOUT_MS = Number(process.env.FENESH_ASKNEWS_TIMEOUT_MS ?? 15_000);
+let askFailures = 0;
+function askFailed(): void {
+  if (++askFailures >= 2) { cool('asknews', 30); askFailures = 0; log.warn('asknews failing, skipped for 30 minutes'); }
+}
 
 async function askNewsSearch(query: string, n = 8, days = 30): Promise<Evidence[]> {
   const key = process.env.ASKNEWS_API_KEY;
@@ -99,15 +106,19 @@ async function askNewsSearch(query: string, n = 8, days = 30): Promise<Evidence[
   // that fails gives its slot back, so only successful (billed) searches count.
   askUsed++;
   const release = () => { if (askDay === day) askUsed = Math.max(0, askUsed - 1); };
-  const u = new URL('https://api.asknews.app/v1/news/search');
+  const u = new URL(`${process.env.FENESH_ASKNEWS_URL ?? 'https://api.asknews.app'}/v1/news/search`);
   const params: Record<string, string> = { query, n_articles: String(n), return_type: 'dicts', method: 'nl' };
   const asOf = asOfMs();
   if (asOf == null) params.hours_back = String(days * 24);
   else Object.assign(params, { historical: 'true', start_timestamp: String(Math.floor((asOf - days * 86_400_000) / 1000)), end_timestamp: String(Math.floor(asOf / 1000)) });
   u.search = new URLSearchParams(params).toString();
   let r;
-  try { r = await get(u.toString(), { headers: { Authorization: `Bearer ${key}` }, timeoutMs: 60_000 }); }
-  catch (e) { release(); throw e; }
+  try { r = await get(u.toString(), { headers: { Authorization: `Bearer ${key}` }, timeoutMs: ASK_TIMEOUT_MS }); }
+  catch (e: any) {
+    release(); askFailed();
+    throw new Error(`asknews: ${e?.name === 'AbortError' || e?.name === 'TimeoutError' ? `no answer in ${ASK_TIMEOUT_MS / 1000} s` : e?.message}`);
+  }
+  if (r.status >= 500) askFailed();
   if (r.status >= 400) {
     release();
     if (r.status === 429) { cool('asknews'); throw new Error('asknews HTTP 429'); }
@@ -119,6 +130,7 @@ async function askNewsSearch(query: string, n = 8, days = 30): Promise<Evidence[
     }
     throw new Error(`asknews HTTP ${r.status}: ${r.text.slice(0, 200)}`);
   }
+  askFailures = 0;
   const d = JSON.parse(r.text);
   return (d.as_dicts ?? [])
     // Never let an article from after the as-of moment into a backtest.
