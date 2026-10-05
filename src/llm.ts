@@ -30,8 +30,9 @@ export interface CallResult { text: string; usage: Usage; model: string; toolCal
 const UsageSink: Array<(model: string, label: string, u: Usage) => void> = [];
 export function onUsage(fn: (model: string, label: string, u: Usage) => void): void { UsageSink.push(fn); }
 
-function cost(spec: ModelSpec, input: number, output: number): number {
-  return (input * spec.price.input + output * spec.price.output) / 1e6;
+// Cached prompt tokens bill at 10% of the input price on a read and 125% on a write (Claude on Bedrock).
+function cost(spec: ModelSpec, input: number, output: number, cacheRead = 0, cacheWrite = 0): number {
+  return (input * spec.price.input + cacheRead * spec.price.input * 0.1 + cacheWrite * spec.price.input * 1.25 + output * spec.price.output) / 1e6;
 }
 
 async function post(url: string, body: unknown, timeoutMs: number): Promise<any> {
@@ -102,8 +103,15 @@ async function callConverse(spec: ModelSpec, prompt: string, o: CallOptions): Pr
   const toolConfig = o.tools?.length
     ? { tools: o.tools.map((t) => ({ toolSpec: { name: t.name, description: t.description, inputSchema: { json: t.parameters } } })) }
     : undefined;
-  let input = 0, output = 0, toolCalls = 0;
+  let input = 0, output = 0, toolCalls = 0, cacheRead = 0, cacheWrite = 0;
+  const cacheable = spec.id.includes('anthropic') && !!toolConfig;
   for (let round = 0; ; round++) {
+    // Tool loops resend the whole conversation every round; a cache point at its end makes the next
+    // round read that prefix from cache (one point at a time, Bedrock allows four).
+    if (cacheable) {
+      for (const m of messages) m.content = m.content.filter((c: any) => !c.cachePoint);
+      messages[messages.length - 1].content.push({ cachePoint: { type: 'default' } });
+    }
     const body: any = {
       messages,
       inferenceConfig: { maxTokens: o.maxTokens ?? spec.maxTokens },
@@ -114,6 +122,8 @@ async function callConverse(spec: ModelSpec, prompt: string, o: CallOptions): Pr
     const d = await post(url, body, o.timeoutMs ?? 15 * 60_000);
     input += d.usage?.inputTokens ?? 0;
     output += d.usage?.outputTokens ?? 0;
+    cacheRead += d.usage?.cacheReadInputTokens ?? 0;
+    cacheWrite += d.usage?.cacheWriteInputTokens ?? 0;
     const content: any[] = d.output?.message?.content ?? [];
     const uses = content.filter((c) => c.toolUse);
     const maxRounds = o.maxToolRounds ?? 12;
@@ -130,7 +140,8 @@ async function callConverse(spec: ModelSpec, prompt: string, o: CallOptions): Pr
       continue;
     }
     const text = content.filter((c) => typeof c.text === 'string').map((c) => c.text).join('\n');
-    return { text, usage: { input, output, costUsd: cost(spec, input, output) }, model: spec.key, toolCalls };
+    if (cacheRead || cacheWrite) log.info('prompt cache', { model: spec.key, label: o.label, read: cacheRead, write: cacheWrite, uncached: input });
+    return { text, usage: { input: input + cacheRead + cacheWrite, output, costUsd: cost(spec, input, output, cacheRead, cacheWrite) }, model: spec.key, toolCalls };
   }
 }
 
@@ -187,23 +198,37 @@ async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): P
 
 const clientError = (e: any) => /^bedrock 4\d\d/.test(e?.message ?? '') && !/^bedrock 429/.test(e.message);
 
+// Circuit breaker: a model that failed two calls in a row is skipped for 15 minutes, so an outage costs
+// one detection window instead of a hung request on every step of every question.
+const downUntil = new Map<string, number>();
+const failuresInARow = new Map<string, number>();
+export function modelDown(key: string): boolean { return (downUntil.get(key) ?? 0) > Date.now(); }
+function markFailure(key: string): void {
+  const n = (failuresInARow.get(key) ?? 0) + 1;
+  failuresInARow.set(key, n);
+  if (n >= 2) { downUntil.set(key, Date.now() + 15 * 60_000); failuresInARow.set(key, 0); log.warn('model skipped for 15 minutes after repeated failures', { model: key }); }
+}
+
 // One retry for a failed or empty reply, then the fallback model if one is given. Provider-side
 // hiccups (503s, 200s with no output) come in bursts; a request the provider refuses (4xx) is not retried.
 export async function call(modelKey: string, prompt: string, o: CallOptions = {}): Promise<CallResult> {
   const spec = model(modelKey);
   let lastErr: any;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  if (modelDown(modelKey)) lastErr = new Error(`${modelKey} is skipped after repeated failures`);
+  else for (let attempt = 0; attempt < 2; attempt++) {
     const t0 = Date.now();
     try {
       const r = spec.transport === 'converse' ? await callConverse(spec, prompt, o) : await callResponses(spec, prompt, o);
       log.info('llm', { model: spec.key, label: o.label, ms: Date.now() - t0, in: r.usage.input, out: r.usage.output, usd: +r.usage.costUsd.toFixed(4), tools: r.toolCalls });
       for (const fn of UsageSink) fn(spec.key, o.label ?? '', r.usage);
       if (!r.text.trim() && r.usage.output === 0) throw new Error(`${spec.key} returned an empty reply`);
+      failuresInARow.set(modelKey, 0);
       return r;
     } catch (e: any) {
       lastErr = e;
       log.warn('llm call failed', { model: spec.key, label: o.label, attempt, ms: Date.now() - t0, err: String(e?.message ?? e).slice(0, 300) });
       if (clientError(e)) break;
+      if (attempt === 1) markFailure(modelKey);
     }
   }
   if (o.fallback && o.fallback !== modelKey) {

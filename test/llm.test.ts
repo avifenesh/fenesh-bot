@@ -43,10 +43,21 @@ describe('model calls', () => {
     expect(Date.now() - t0).toBeLessThan(2000);
   });
 
+  // The two failed calls above (empty replies, then hangs) tripped the breaker for Sol.
+  it('skips a model that keeps failing and goes straight to the fallback', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(opusText('from opus'));
+    vi.stubGlobal('fetch', fetch);
+    const r = await call('gpt-6.1-sol', 'q', { label: 't', fallback: 'opus-5.5' });
+    expect(r.model).toBe('opus-5.5');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(String(fetch.mock.calls[0][0])).toContain('/converse');
+    await expect(call('gpt-6.1-sol', 'q', { label: 't' })).rejects.toThrow(/skipped after repeated failures/);
+  });
+
   it('does not retry a refused request', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response('{"message":"bad input"}', { status: 400 }));
     vi.stubGlobal('fetch', fetch);
-    await expect(call('gpt-6.1-sol', 'q', { label: 't' })).rejects.toThrow(/bedrock 400/);
+    await expect(call('gpt-6-astra', 'q', { label: 't' })).rejects.toThrow(/bedrock 400/);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

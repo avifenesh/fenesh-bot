@@ -6,7 +6,6 @@ import type { ToolSpec } from '../llm.ts';
 import { log } from '../log.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { alert } from '../alert.ts';
 import { asOfMs, liveOnly, nowMs } from '../asof.ts';
 import { config } from '../config.ts';
 import { fetchPage, get, getJson, htmlToText } from './http.ts';
@@ -124,11 +123,7 @@ async function askNewsSearch(query: string, n = 8, days = 30): Promise<Evidence[
     release();
     if (r.status === 429) { cool('asknews'); throw new Error('asknews HTTP 429'); }
     // 402: the wallet is empty. Back off for hours instead of failing on every question.
-    if (r.status === 402) {
-      cool('asknews', 360);
-      void alert('AskNews wallet is empty: news search is paused until it is funded (my.asknews.app/settings/wallet).', { key: 'asknews-402', everyMs: 24 * 3600_000 });
-      throw new Error('asknews HTTP 402: wallet empty');
-    }
+    if (r.status === 402) { cool('asknews', 360); throw new Error('asknews HTTP 402: wallet empty'); }
     throw new Error(`asknews HTTP ${r.status}: ${r.text.slice(0, 200)}`);
   }
   askFailures = 0;
