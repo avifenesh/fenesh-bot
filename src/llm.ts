@@ -54,6 +54,8 @@ async function post(url: string, body: unknown, timeoutMs: number): Promise<any>
     } catch (e: any) {
       lastErr = e;
       if (e?.message?.startsWith('bedrock 4') && !e.message.startsWith('bedrock 429')) throw e;
+      // A request that hung until its timeout is not repeated here; call() retries once, then falls back.
+      if (e?.name === 'AbortError') throw new Error(`bedrock request timed out after ${Math.round(timeoutMs / 1000)} s`);
     } finally {
       clearTimeout(timer);
     }
@@ -213,7 +215,7 @@ export async function call(modelKey: string, prompt: string, o: CallOptions = {}
 
 // The fast steps (plan, classification, market match, repair, wiki) run on one model at low effort.
 export function fast(prompt: string, o: CallOptions = {}): Promise<CallResult> {
-  return call(config.fastModel, prompt, { effort: config.fastEffort, fallback: config.fallbackModel, ...o });
+  return call(config.fastModel, prompt, { effort: config.fastEffort, fallback: config.fallbackModel, timeoutMs: 120_000, ...o });
 }
 
 // Pull the last JSON object out of a model reply (models are told to end with one).

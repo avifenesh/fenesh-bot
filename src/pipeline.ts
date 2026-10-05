@@ -113,7 +113,8 @@ const cited = (brief: string) => countedSources(citedUrls(brief)).length;
 
 async function writeBrief(q: Question, items: Evidence[], b: Budget): Promise<string> {
   try {
-    const opts = { label: 'research', effort: 'medium', tools: researchTools(), maxToolRounds: 14, maxTokens: 24000, fallback: config.fallbackModel };
+    // Per request (one tool round), not the whole brief.
+    const opts = { label: 'research', effort: 'medium', tools: researchTools(), maxToolRounds: 14, maxTokens: 24000, fallback: config.fallbackModel, timeoutMs: 300_000 };
     const r = await call(config.researchModel, researchPrompt(q, digest(items), MIN_WEB_SOURCES), opts);
     b.add(r.usage.costUsd);
     let brief = r.text.trim();
@@ -176,7 +177,7 @@ function parseForecast(q: Question, j: any): Pick<ForecasterOutput, 'pYes' | 'pr
 async function forecastOne(q: Question, modelKey: string, brief: string, extra: string, b: Budget): Promise<ForecasterOutput> {
   let costUsd = 0;
   try {
-    const r = await call(modelKey, forecastPrompt(q, brief, extra), { label: 'forecast' });
+    const r = await call(modelKey, forecastPrompt(q, brief, extra), { label: 'forecast', timeoutMs: 600_000 });
     costUsd += r.usage.costUsd;
     let parsed;
     try { parsed = parseForecast(q, lastJson(r.text)); }

@@ -32,6 +32,17 @@ describe('model calls', () => {
     expect(String(fetch.mock.calls[2][0])).toContain('/converse');
   });
 
+  it('moves on from a hung request to the fallback', async () => {
+    const hang = (_u: string, init: any) => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
+    const fetch = vi.fn().mockImplementationOnce(hang).mockImplementationOnce(hang).mockResolvedValueOnce(opusText('from opus'));
+    vi.stubGlobal('fetch', fetch);
+    const t0 = Date.now();
+    const r = await call('gpt-6.1-sol', 'q', { label: 't', fallback: 'opus-5.5', timeoutMs: 200 });
+    expect(r.text).toBe('from opus');
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+
   it('does not retry a refused request', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response('{"message":"bad input"}', { status: 400 }));
     vi.stubGlobal('fetch', fetch);
