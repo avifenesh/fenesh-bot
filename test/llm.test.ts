@@ -118,9 +118,10 @@ describe('model calls', () => {
     const fetch = vi.fn().mockImplementation(hang);
     vi.stubGlobal('fetch', fetch);
     const t0 = Date.now();
-    await expect(withDeadline(500, () => call('opus-5.5', 'q', { label: 't' }))).rejects.toThrow();
-    expect(Date.now() - t0).toBeLessThan(2000);
-    // No fallback is started once the deadline has passed.
-    expect(fetch.mock.calls.length).toBeLessThanOrEqual(2);
+    // The first request hangs and is cut at the deadline; nothing else starts after it.
+    await expect(withDeadline(1_500, () => call('opus-5.5', 'q', { label: 't' }))).rejects.toThrow(/run deadline passed/);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(1_400);
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

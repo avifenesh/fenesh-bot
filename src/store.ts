@@ -86,6 +86,19 @@ export function finishRun(id: number, status: string, r?: RunResult, error?: str
   if (r.shadow?.length) put(9, r.shadow); // shadow models: scored, never submitted
 }
 
+// Exclusive right to submit a question: the first run to claim it posts, any other run is superseded.
+// A failed post releases the claim so a retry can submit.
+export function claimSubmission(questionId: number, runId: number): boolean {
+  const d = open();
+  d.exec('CREATE TABLE IF NOT EXISTS submit_claims (question_id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, at TEXT NOT NULL)');
+  const r = d.prepare('INSERT OR IGNORE INTO submit_claims (question_id, run_id, at) VALUES (?, ?, ?)').run(questionId, runId, new Date().toISOString());
+  return Number(r.changes) === 1;
+}
+
+export function releaseSubmission(questionId: number, runId: number): void {
+  open().prepare('DELETE FROM submit_claims WHERE question_id = ? AND run_id = ?').run(questionId, runId);
+}
+
 // True if this question already got a submitted forecast from us.
 export function submitted(questionId: number): boolean {
   const row = open().prepare(`SELECT 1 FROM runs WHERE question_id = ? AND status = 'submitted' LIMIT 1`).get(questionId);

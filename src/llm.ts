@@ -48,11 +48,23 @@ export function effortFor(requested: string): string {
   return EFFORTS.indexOf(requested) < EFFORTS.indexOf('medium') ? 'medium' : requested;
 }
 
+// Run deadline: every model call inside withDeadline() (fallbacks included) stops at it, so a run can
+// never outlive the window in which the queue treats its question as in flight (src/store.ts inFlight).
+const deadlineStore = new AsyncLocalStorage<number>();
+export const RUN_DEADLINE_MS = 40 * 60_000;
+export function withDeadline<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+  return deadlineStore.run(Date.now() + ms, fn);
+}
+function timeLeft(): number { const d = deadlineStore.getStore(); return d == null ? Infinity : d - Date.now(); }
+
 async function post(url: string, body: unknown, timeoutMs: number): Promise<any> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
+    // Every request (each retry, each tool round) gets only the time the run has left.
+    const left = timeLeft();
+    if (left < 1_000) throw new Error('run deadline passed');
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const timer = setTimeout(() => ctrl.abort(), Math.min(timeoutMs, left));
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -69,7 +81,7 @@ async function post(url: string, body: unknown, timeoutMs: number): Promise<any>
       lastErr = e;
       if (e?.message?.startsWith('bedrock 4') && !e.message.startsWith('bedrock 429')) throw e;
       // A request that hung until its timeout is not repeated here; call() retries once, then falls back.
-      if (e?.name === 'AbortError') throw new Error(`bedrock request timed out after ${Math.round(timeoutMs / 1000)} s`);
+      if (e?.name === 'AbortError') throw new Error(timeLeft() < 1_000 ? 'run deadline passed' : `bedrock request timed out after ${Math.round(timeoutMs / 1000)} s`);
     } finally {
       clearTimeout(timer);
     }
@@ -211,15 +223,6 @@ async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): P
   }
 }
 
-// Run deadline: every model call inside withDeadline() (fallbacks included) stops at it, so a run can
-// never outlive the window in which the queue treats its question as in flight (src/store.ts inFlight).
-const deadlineStore = new AsyncLocalStorage<number>();
-export const RUN_DEADLINE_MS = 40 * 60_000;
-export function withDeadline<T>(ms: number, fn: () => Promise<T>): Promise<T> {
-  return deadlineStore.run(Date.now() + ms, fn);
-}
-function timeLeft(): number { const d = deadlineStore.getStore(); return d == null ? Infinity : d - Date.now(); }
-
 const clientError = (e: any) => /^bedrock 4\d\d/.test(e?.message ?? '') && !/^bedrock 429/.test(e.message);
 
 // Circuit breaker: a model that failed two calls in a row is skipped for 15 minutes, so an outage costs
@@ -241,11 +244,9 @@ export async function call(modelKey: string, prompt: string, o: CallOptions = {}
   if (modelDown(modelKey)) lastErr = new Error(`${modelKey} is skipped after repeated failures`);
   else for (let attempt = 0; attempt < 2; attempt++) {
     const t0 = Date.now();
-    const left = timeLeft();
-    if (left < 5_000) { lastErr = new Error('run deadline passed'); break; }
+    if (timeLeft() < 1_000) { lastErr = new Error('run deadline passed'); break; }
     try {
-      const timed = { ...o, timeoutMs: Math.min(o.timeoutMs ?? 15 * 60_000, left) };
-      const r = spec.transport === 'converse' ? await callConverse(spec, prompt, timed) : await callResponses(spec, prompt, timed);
+      const r = spec.transport === 'converse' ? await callConverse(spec, prompt, o) : await callResponses(spec, prompt, o);
       log.info('llm', { model: spec.key, label: o.label, ms: Date.now() - t0, in: r.usage.input, cached: r.usage.cacheRead ?? 0, out: r.usage.output, usd: +r.usage.costUsd.toFixed(4), tools: r.toolCalls });
       for (const fn of UsageSink) fn(spec.key, o.label ?? '', r.usage);
       if (!r.text.trim() && r.usage.output === 0) throw new Error(`${spec.key} returned an empty reply`);
@@ -254,13 +255,13 @@ export async function call(modelKey: string, prompt: string, o: CallOptions = {}
     } catch (e: any) {
       lastErr = e;
       log.warn('llm call failed', { model: spec.key, label: o.label, attempt, ms: Date.now() - t0, err: String(e?.message ?? e).slice(0, 300) });
-      if (clientError(e)) break;
+      if (clientError(e) || /run deadline passed/.test(e?.message ?? '')) break;
       if (attempt === 1) markFailure(modelKey);
     }
   }
   const next = o.fallback === null ? undefined : (o.fallback ?? spec.fallback);
   const tried = [...((o as any)._tried ?? []), modelKey];
-  if (next && !tried.includes(next) && timeLeft() >= 5_000) {
+  if (next && !tried.includes(next) && timeLeft() >= 1_000) {
     log.warn('llm fallback', { from: spec.key, to: next, label: o.label });
     // The fallback's own fallback is next in line; a model already tried is never tried again.
     return call(next, prompt, { ...o, fallback: undefined, _tried: tried } as CallOptions);
