@@ -9,8 +9,9 @@ aggregates them in code and posts the forecast with a comment explaining it.
 
 1. **Plan.** GPT-6.1 Sol at low effort writes search queries, Wikipedia titles, prediction-market queries and
    data series to pull.
-2. **Gather.** Every research source runs in parallel: web search, news (AskNews, GDELT, Wikipedia Current
-   Events), Wikipedia, Polymarket and Manifold prices, the pages named in the resolution criteria, and
+2. **Gather.** Every research source runs in parallel: web search (the
+   [harness-websearch](https://github.com/avifenesh/tools) CLI's keyless chain: Exa, Parallel, Mojeek,
+   Marginalia, Wikipedia), news (AskNews, GDELT, Wikipedia Current Events), Wikipedia, Polymarket and Manifold prices, the pages named in the resolution criteria, and
    FRED / CoinGecko / Yahoo Finance series with summary statistics.
 3. **Research brief.** GPT-6.1 Sol reads the gathered items and uses the same sources as tools to check the
    resolution source, verify key claims and find base rates. It writes a dated, sourced brief with no
@@ -36,7 +37,9 @@ can be scored when questions resolve.
 - A per-question cost cap and a daily budget; past the budget the bot uses the cheaper path (GPT-6.1 Sol,
   Opus 5.5 and Fable 5.1, no supervisor). MiniBench gets the full path, since it is the
   bench the system is tuned against.
-- Alerts go to a webhook (`FENESH_ALERT_WEBHOOK`) when a question fails or closes unforecast.
+- Alerts go to a webhook (`FENESH_ALERT_WEBHOOK`, plain-text POST; an ntfy topic works, with
+  `FENESH_ALERT_TOKEN` as its bearer token) when a question fails or closes unforecast, or when the
+  AskNews wallet runs dry.
 
 ## Models
 

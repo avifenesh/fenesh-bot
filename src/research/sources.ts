@@ -4,7 +4,9 @@
 import type { Question } from '../metaculus.ts';
 import type { ToolSpec } from '../llm.ts';
 import { log } from '../log.ts';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { alert } from '../alert.ts';
 import { asOfMs, liveOnly, nowMs } from '../asof.ts';
 import { config } from '../config.ts';
 import { fetchPage, get, getJson, htmlToText } from './http.ts';
@@ -110,7 +112,11 @@ async function askNewsSearch(query: string, n = 8, days = 30): Promise<Evidence[
     release();
     if (r.status === 429) { cool('asknews'); throw new Error('asknews HTTP 429'); }
     // 402: the wallet is empty. Back off for hours instead of failing on every question.
-    if (r.status === 402) { cool('asknews', 360); throw new Error('asknews HTTP 402: wallet empty'); }
+    if (r.status === 402) {
+      cool('asknews', 360);
+      void alert('AskNews wallet is empty: news search is paused until it is funded (my.asknews.app/settings/wallet).', { key: 'asknews-402', everyMs: 24 * 3600_000 });
+      throw new Error('asknews HTTP 402: wallet empty');
+    }
     throw new Error(`asknews HTTP ${r.status}: ${r.text.slice(0, 200)}`);
   }
   const d = JSON.parse(r.text);
@@ -140,7 +146,41 @@ const asknews: ResearchSource = {
   }] : []),
 };
 
-// ---------- Exa web search through its hosted MCP endpoint ----------
+// ---------- Web search ----------
+//
+// The owner's harness-websearch CLI (github.com/avifenesh/tools) runs a keyless engine chain with
+// fallback: Exa, Parallel, Mojeek, Marginalia, Wikipedia. JSON-RPC over stdin, one request per call.
+// Without the binary (a dev machine), the direct Exa call below is used.
+
+const WEBSEARCH_BIN = process.env.FENESH_WEBSEARCH_BIN ?? '/usr/local/bin/harness-websearch-cli';
+const ENGINE_ORDER = ['exa', 'parallel', 'mojeek', 'marginalia', 'wikipedia'];
+
+export async function harnessSearch(query: string, n = 8, bin = WEBSEARCH_BIN): Promise<Evidence[]> {
+  liveOnly('web search');
+  const request = JSON.stringify({ id: 1, method: 'websearch', params: { params: { query, count: n }, session: { unsafe_allow_search_without_hook: true, engine_order: ENGINE_ORDER } } });
+  const stdout = await new Promise<string>((resolve, reject) => {
+    const p = spawn(bin, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '', err = '';
+    const timer = setTimeout(() => { p.kill('SIGKILL'); reject(new Error('websearch timed out after 45 s')); }, 45_000);
+    p.stdout.on('data', (d) => { out += d; });
+    p.stderr.on('data', (d) => { err += d; });
+    p.on('error', (e) => { clearTimeout(timer); reject(e); });
+    p.on('close', (code) => { clearTimeout(timer); if (code === 0) resolve(out); else reject(new Error(`websearch exited ${code}: ${err.slice(0, 200)}`)); });
+    p.stdin.end(`${request}\n`);
+  });
+  const r = JSON.parse(stdout.trim().split('\n').pop() ?? '{}').result;
+  if (r?.kind !== 'ok') throw new Error(`websearch: ${JSON.stringify(r ?? {}).slice(0, 200)}`);
+  return (r.results ?? []).map((x: any) => ({
+    source: 'web', title: String(x.title ?? ''), url: x.url,
+    published: /^\d{4}-\d{2}-\d{2}/.test(x.age ?? '') ? String(x.age).slice(0, 10) : undefined,
+    snippet: String(x.snippet ?? '').slice(0, 1500),
+  }));
+}
+
+function webSearch(query: string, n: number): Promise<Evidence[]> {
+  return existsSync(WEBSEARCH_BIN) ? harnessSearch(query, n) : exaSearch(query, n);
+}
+
 
 async function exaSearch(query: string, n = 8): Promise<Evidence[]> {
   liveOnly('web search');
@@ -171,17 +211,17 @@ async function exaSearch(query: string, n = 8): Promise<Evidence[]> {
   return out;
 }
 
-const exa: ResearchSource = {
-  name: 'exa',
+const web: ResearchSource = {
+  name: 'web',
   async gather(_q, plan) {
-    const res = await Promise.allSettled(plan.queries.slice(0, 5).map((q) => exaSearch(q, 6)));
+    const res = await Promise.allSettled(plan.queries.slice(0, 5).map((q) => webSearch(q, 6)));
     return res.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
   },
   tools: () => [{
     name: 'web_search',
     description: 'General web search. Returns titles, URLs, dates and relevant passages.',
     parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
-    run: async ({ query }) => fmt(await exaSearch(query, 8), true),
+    run: async ({ query }) => fmt(await webSearch(query, 8), true),
   }],
 };
 
@@ -564,7 +604,7 @@ const currentEventsSource: ResearchSource = {
   }],
 };
 
-export const SOURCES: ResearchSource[] = [exa, asknews, gdelt, currentEventsSource, wikipedia, markets, resolution, series];
+export const SOURCES: ResearchSource[] = [web, asknews, gdelt, currentEventsSource, wikipedia, markets, resolution, series];
 
 export function fmt(items: Evidence[], withSnippet = false): string {
   if (!items.length) return 'no results';

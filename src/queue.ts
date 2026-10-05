@@ -4,6 +4,7 @@
 //                    plus a delayed "safety" job per question that forecasts on the lean path
 //                    25 min before close if nothing was submitted by then.
 
+import { alert } from './alert.ts';
 import { Queue, UnrecoverableError, Worker, type Job } from 'glide-mq';
 import { config } from './config.ts';
 import { log } from './log.ts';
@@ -22,13 +23,6 @@ const leanForecasters = (process.env.FENESH_LEAN_FORECASTERS ?? 'gpt-6.1-sol,opu
 const dailyBudget = Number(process.env.FENESH_DAILY_BUDGET_USD ?? 60);
 const safetyLeadMs = 25 * 60_000;
 
-export async function alert(text: string): Promise<void> {
-  log.error('alert', { text });
-  const url = process.env.FENESH_ALERT_WEBHOOK;
-  if (!url) return;
-  try { await fetch(url, { method: 'POST', body: `fenesh-bot: ${text}`, signal: AbortSignal.timeout(10_000) }); }
-  catch (e: any) { log.warn('alert webhook failed', { err: e.message }); }
-}
 
 interface QuestionJob { postId: number; questionId: number; closeTime: string; tournaments: string[]; lean?: boolean }
 
