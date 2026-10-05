@@ -40,7 +40,7 @@ async function leaderboardLine(projectId: number, name: string): Promise<string>
 export async function standingsReport(newlyResolved: number): Promise<string> {
   const d = db();
   const total = (d.prepare(`SELECT COUNT(DISTINCT question_id) AS n FROM runs WHERE status = 'submitted'`).get() as any).n;
-  const rows = d.prepare(`SELECT r.question, r.payload, r.post_id, o.resolution, o.peer_score FROM runs r
+  const rows = d.prepare(`SELECT r.question, r.payload, r.post_id, r.tournaments, o.resolution, o.peer_score FROM runs r
     JOIN outcomes o ON o.question_id = r.question_id
     WHERE r.status = 'submitted' AND o.resolution NOT IN ('annulled', 'ambiguous')`).all() as any[];
   const lines = [`Standings: ${newlyResolved} new resolution${newlyResolved === 1 ? '' : 's'}; ${rows.length} of ${total} submitted forecasts resolved.`];
@@ -50,12 +50,13 @@ export async function standingsReport(newlyResolved: number): Promise<string> {
 
   // One leaderboard line per project the resolved questions belong to: tournaments list themselves under
   // `tournament`, MiniBench under `question_series` and `default_project` (as in src/metaculus.ts).
+  // One representative post per tournament the archive records (runs before the tournament field was
+  // filled in share the empty value), so every represented tournament is looked up.
   const projects = new Map<number, { name: string }>();
-  const seenPosts = new Set<number>();
-  for (const r of rows.slice(-20)) {
-    if (projects.size >= 4 || seenPosts.size >= 5) break;
-    if (seenPosts.has(r.post_id)) continue;
-    seenPosts.add(r.post_id);
+  const representative = new Map<string, number>();
+  for (const r of rows) representative.set(r.tournaments ?? '', r.post_id);
+  for (const postId of [...representative.values()].slice(0, 6)) {
+    const r = { post_id: postId };
     try {
       const pr = (await fetchPostJson(r.post_id)).projects ?? {};
       for (const p of [...(pr.tournament ?? []), ...(pr.question_series ?? []), pr.default_project]) {
