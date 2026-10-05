@@ -17,8 +17,11 @@ Metaculus forecasting bot (bot user `fenesh-bot`, id 309777). TypeScript run dir
   (2026-10-05): zero-shot it had no signal on 1,002 resolved tournament questions, and under a temporal
   split neither its frozen embeddings plus metadata nor its calibrated vote beat the base rate. Do not
   re-add it, or another encoder-only System 1, without new evidence.
-- The fast steps (plan, base-rate class, market match, JSON repair, wiki) run on GPT-6.1 Sol at low
+- The fast steps (plan, base-rate class, market match, JSON repair, wiki) run on GPT-6.1 Sol at medium
   effort through `fast()` in `src/llm.ts`.
+- Model rules (owner, 2026-10-05): every model in `src/config.ts` has a `fallback`; effort is never below
+  medium (`effortFor` enforces it) and fits the task; the prompt cache is always on (Claude cache point,
+  GPT `prompt_cache_key`). Fallback-only models (GPT-6 Sol, Sonnet 5.5) never join the ensemble.
 - Research sources plug into `src/research/sources.ts`; add one there only when the owner approves it.
   AskNews (approved 2026-10-04) bills credits per search and is capped per day.
 - One forecast per question. Never resubmit a question unless the owner asks.

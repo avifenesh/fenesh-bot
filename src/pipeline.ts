@@ -14,7 +14,8 @@ import { classify, matchMarket, type MarketMatch } from './priors.ts';
 import { wikiTool } from './wiki.ts';
 
 export interface ForecasterOutput {
-  model: string;
+  model: string; // the model that answered
+  slot?: string; // the ensemble member it answered for (differs when a fallback answered)
   ok: boolean;
   error?: string;
   costUsd: number;
@@ -114,7 +115,7 @@ const cited = (brief: string) => countedSources(citedUrls(brief)).length;
 async function writeBrief(q: Question, items: Evidence[], b: Budget): Promise<string> {
   try {
     // Per request (one tool round), not the whole brief.
-    const opts = { label: 'research', effort: 'medium', tools: researchTools(), maxToolRounds: 14, maxTokens: 24000, fallback: config.fallbackModel, timeoutMs: 300_000 };
+    const opts = { label: 'research', effort: config.researchEffort, tools: researchTools(), maxToolRounds: 14, maxTokens: 24000, timeoutMs: 300_000 };
     const r = await call(config.researchModel, researchPrompt(q, digest(items), MIN_WEB_SOURCES), opts);
     b.add(r.usage.costUsd);
     let brief = r.text.trim();
@@ -188,12 +189,25 @@ async function forecastOne(q: Question, modelKey: string, brief: string, extra: 
       parsed = parseForecast(q, lastJson(fix.text));
     }
     b.add(costUsd);
-    return { model: modelKey, ok: true, costUsd, reasoning: r.text.slice(0, 20_000), ...parsed };
+    // `model` is who answered: the slot's model, or its fallback when that one was down.
+    if (r.model !== modelKey) log.warn('forecaster answered by its fallback', { q: q.questionId, slot: modelKey, model: r.model });
+    return { model: r.model, slot: modelKey, ok: true, costUsd, reasoning: r.text.slice(0, 20_000), ...parsed };
   } catch (e: any) {
     b.add(costUsd);
     log.warn('forecaster failed', { q: q.questionId, model: modelKey, err: e.message });
     return { model: modelKey, ok: false, error: e.message, costUsd };
   }
+}
+
+// Two members that both fell back to the same model would give it two votes: keep the first answer.
+export function dedupeAnswers(fs: ForecasterOutput[]): ForecasterOutput[] {
+  const seen = new Set<string>();
+  return fs.map((f) => {
+    if (!f.ok) return f;
+    if (seen.has(f.model)) return { ...f, ok: false, error: `duplicate answer from fallback ${f.model}` };
+    seen.add(f.model);
+    return f;
+  });
 }
 
 const logit = (p: number) => Math.log(p / (1 - p));
@@ -309,10 +323,11 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
 
   const models = opts.forecasters ?? config.forecasters;
   const shadowModels = (process.env.FENESH_SHADOW_MODELS ?? '').split(',').map((x) => x.trim()).filter((x) => x && !models.includes(x));
-  const [round1, shadow] = await Promise.all([
+  const [round1Raw, shadow] = await Promise.all([
     Promise.all(models.map((m) => forecastOne(q, m, brief, priorsBlock, b))),
     Promise.all(shadowModels.map((m) => forecastOne(q, m, brief, priorsBlock, b))),
   ]);
+  const round1 = dedupeAnswers(round1Raw);
   let forecasts = round1;
   const dis = disagreement(q, round1);
   let addendum: string | undefined;
@@ -326,7 +341,7 @@ export async function runQuestion(q: Question, opts: { forecasters?: string[]; s
       b.add(sv.usage.costUsd);
       if (sv.text.trim().length < 100) throw new Error('supervisor returned no addendum');
       addendum = sv.text.trim();
-      const round2 = await Promise.all(models.map((m) => forecastOne(q, m, brief, `${priorsBlock}\n\nAddendum from the supervisor, who checked the points the team disagreed on:\n${addendum}`, b)));
+      const round2 = dedupeAnswers(await Promise.all(models.map((m) => forecastOne(q, m, brief, `${priorsBlock}\n\nAddendum from the supervisor, who checked the points the team disagreed on:\n${addendum}`, b))));
       if (round2.filter((f) => f.ok).length >= Math.min(3, models.length)) forecasts = round2;
     } catch (e: any) {
       log.warn('supervisor failed', { q: q.questionId, err: e.message });

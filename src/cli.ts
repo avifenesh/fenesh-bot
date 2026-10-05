@@ -6,19 +6,32 @@
 //   report [--no-sync] [--backtest]  fetch resolutions and score every model and the submitted forecast
 //   backtest <census.json> [--models a,b] [--from YYYY-MM-DD] [--n 20] [--types binary,numeric] [--concurrency 3] [--no-supervisor]
 
+import { RUN_DEADLINE_MS, withDeadline } from './llm.ts';
 import { config } from './config.ts';
 import { log } from './log.ts';
 import { getPost, me, postComment, postForecast, type Question } from './metaculus.ts';
 import { Budget, runQuestion } from './pipeline.ts';
-import { commentFailed, finishRun, recent, spentSince, startRun, submitted } from './store.ts';
+import { claimSubmission, commentFailed, finishRun, recent, releaseSubmission, spentSince, startRun, submitted } from './store.ts';
 
 export async function forecastAndSubmit(q: Question, opts: { forecasters?: string[]; supervisor?: boolean } = {}): Promise<string> {
   const id = startRun(q);
   const budget = new Budget(config.maxCostPerQuestion);
   let r;
   try {
-    r = await runQuestion(q, opts, budget);
-    await postForecast(q.questionId, r.payload);
+    r = await withDeadline(RUN_DEADLINE_MS, () => runQuestion(q, opts, budget));
+    // One forecast per question: another run (the safety job) may be submitting it too. The claim is
+    // exclusive; a failed post gives it back.
+    if (!config.dryRun && (submitted(q.questionId) || !claimSubmission(q.questionId, id))) {
+      finishRun(id, 'superseded', r, 'another run submitted first');
+      log.warn('superseded', { q: q.questionId, run: id });
+      return `${q.title}\n  -> superseded: another run submitted first`;
+    }
+    try {
+      await postForecast(q.questionId, r.payload);
+    } catch (e) {
+      if (!config.dryRun) releaseSubmission(q.questionId, id);
+      throw e;
+    }
   } catch (e: any) {
     // Record what the failed attempt spent so the daily budget sees it.
     finishRun(id, 'failed', r, e.message, budget.spent);

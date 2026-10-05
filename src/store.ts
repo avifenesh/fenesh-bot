@@ -54,7 +54,7 @@ function open(): DatabaseSync {
       fetched_at TEXT
     );
   `);
-  for (const ddl of ['ALTER TABLE components ADD COLUMN reasoning TEXT', 'ALTER TABLE runs ADD COLUMN comment_error TEXT']) {
+  for (const ddl of ['ALTER TABLE components ADD COLUMN reasoning TEXT', 'ALTER TABLE runs ADD COLUMN comment_error TEXT', 'ALTER TABLE components ADD COLUMN slot TEXT']) {
     try { db.exec(ddl); } catch { /* column exists */ }
   }
   return db;
@@ -74,15 +74,29 @@ export function finishRun(id: number, status: string, r?: RunResult, error?: str
     r?.costUsd ?? spentUsd ?? null, r?.disagreement ?? null, r ? JSON.stringify(r.plan) : null, r ? JSON.stringify(r.evidence) : null,
     r?.brief ?? null, r?.addendum ?? null, r?.comment ?? null, id);
   if (!r) return;
-  const ins = d.prepare('INSERT INTO components (run_id, round, model, ok, forecast, summary, cost_usd, error, reasoning) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const ins = d.prepare('INSERT INTO components (run_id, round, model, ok, forecast, summary, cost_usd, error, reasoning, slot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  // `model` answered; `slot` is the ensemble member it answered for (they differ when a fallback did).
   const put = (round: number, fs: RunResult['forecasts']) => {
-    for (const f of fs) ins.run(id, round, f.model, f.ok ? 1 : 0, JSON.stringify({ pYes: f.pYes, probs: f.probs, pcts: f.pcts }), f.summary ?? null, f.costUsd, f.error ?? null, f.reasoning ?? null);
+    for (const f of fs) ins.run(id, round, f.model, f.ok ? 1 : 0, JSON.stringify({ pYes: f.pYes, probs: f.probs, pcts: f.pcts }), f.summary ?? null, f.costUsd, f.error ?? null, f.reasoning ?? null, f.slot ?? f.model);
   };
   // Round 0: components that are logged for evaluation but may not be in the aggregate.
-  if (r.market) ins.run(id, 0, 'market', 1, JSON.stringify({ pYes: r.market.quote.probability }), `${r.market.quote.venue}: ${r.market.quote.question} (confidence ${r.market.confidence}, weight ${r.marketWeight})`, 0, null, null);
+  if (r.market) ins.run(id, 0, 'market', 1, JSON.stringify({ pYes: r.market.quote.probability }), `${r.market.quote.venue}: ${r.market.quote.question} (confidence ${r.market.confidence}, weight ${r.marketWeight})`, 0, null, null, 'market');
   put(1, r.round1);
   if (r.addendum) put(2, r.forecasts);
   if (r.shadow?.length) put(9, r.shadow); // shadow models: scored, never submitted
+}
+
+// Exclusive right to submit a question: the first run to claim it posts, any other run is superseded.
+// A failed post releases the claim so a retry can submit.
+export function claimSubmission(questionId: number, runId: number): boolean {
+  const d = open();
+  d.exec('CREATE TABLE IF NOT EXISTS submit_claims (question_id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, at TEXT NOT NULL)');
+  const r = d.prepare('INSERT OR IGNORE INTO submit_claims (question_id, run_id, at) VALUES (?, ?, ?)').run(questionId, runId, new Date().toISOString());
+  return Number(r.changes) === 1;
+}
+
+export function releaseSubmission(questionId: number, runId: number): void {
+  open().prepare('DELETE FROM submit_claims WHERE question_id = ? AND run_id = ?').run(questionId, runId);
 }
 
 // True if this question already got a submitted forecast from us.

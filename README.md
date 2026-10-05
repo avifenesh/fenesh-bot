@@ -46,11 +46,26 @@ can be scored when questions resolve.
 
 All models run on Amazon Bedrock with a bearer key:
 
-| Model | Bedrock id | API |
-|---|---|---|
-| Claude Opus 5.5, Fable 5.1 | `global.anthropic.claude-opus-5-5`, `global.anthropic.claude-fable-5-1` | Converse, adaptive thinking |
-| GPT-6 Astra | `openai.gpt-6-astra` | Mantle Responses (`/openai/v1/responses`) |
-| GPT-6.1 Sol | `global.openai.gpt-6.1-sol` | bedrock-runtime Responses (`/openai/v1/responses`) |
+| Model | Bedrock id | API | Fallback |
+|---|---|---|---|
+| GPT-6 Astra | `openai.gpt-6-astra` | Mantle Responses (`/openai/v1/responses`) | GPT-6 Sol |
+| GPT-6.1 Sol | `global.openai.gpt-6.1-sol` | bedrock-runtime Responses (`/openai/v1/responses`) | GPT-6 Sol |
+| Claude Opus 5.5 | `global.anthropic.claude-opus-5-5` | Converse, adaptive thinking | Claude Sonnet 5.5 |
+| Claude Fable 5.1 | `global.anthropic.claude-fable-5-1` | Converse, adaptive thinking | Claude Sonnet 5.5 |
+| GPT-6 Sol (fallback only) | `global.openai.gpt-6-sol` | bedrock-runtime Responses | Claude Sonnet 5.5 |
+| Claude Sonnet 5.5 (fallback only) | `global.anthropic.claude-sonnet-5-5` | Converse | GPT-6 Sol |
+
+Every call has a fallback chain: a failed or empty reply is retried once, then the model's fallback
+answers, then the fallback's fallback, never a model already tried. A model that fails two calls in a
+row is skipped for 15 minutes. A forecaster's fallback is never another ensemble member, and if two
+members fall back to the same model only its first answer counts.
+
+Reasoning effort is never below medium: forecasts run at xhigh (GPT) and high (Claude), research at
+high, and the small steps (plan, classification, market match, JSON repair, wiki) at medium. The prompt
+cache is always on: Claude calls carry a cache point at the end of the conversation, and GPT calls a
+`prompt_cache_key`, so repeated prefixes (tool-loop rounds, the two forecast rounds, a revision) bill at
+the cache-read rate. Costs count cache reads and writes, and the long-context rates GPT models charge
+above 272K input tokens.
 
 GPT-6.1 Sol is an exception to the plain `openai.*` id rule: it only runs as the global inference
 profile on bedrock-runtime, where the bare id is refused with "on-demand throughput isn't supported".

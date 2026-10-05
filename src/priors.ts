@@ -34,7 +34,7 @@ ${q.resolutionCriteria.slice(0, 1500)}
 Templates: ${templates.map((t) => `"${t}"`).join(', ')}
 Topics: ${topics.map((t) => `"${t}"`).join(', ')}
 
-Return only JSON: {"template": "<one template, verbatim>", "topic": "<one topic, verbatim>"}`, { label: 'classify', effort: 'low', maxTokens: 2000 });
+Return only JSON: {"template": "<one template, verbatim>", "topic": "<one topic, verbatim>"}`, { label: 'classify', maxTokens: 2000 });
     const j = lastJson(r.text);
     const template = templates.includes(j.template) ? j.template : undefined;
     const topic = topics.includes(j.topic) ? j.topic : undefined;

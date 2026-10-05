@@ -31,7 +31,7 @@ export async function writeDigest(day: Date): Promise<string | null> {
   if (lines.length < 5) return null;
   const r = await fast(`Condense these news items from ${date} into a digest grouped by topic (conflicts, politics and elections, economy and markets, science and technology, disasters and health, other). Keep every number, name and date that matters; drop nothing that could decide a forecasting question. Bullets only, no commentary.
 
-${lines.map((l) => l.slice(12)).join('\n').slice(0, 60_000)}`, { label: 'wiki-digest', effort: 'low', maxTokens: 8000 });
+${lines.map((l) => l.slice(12)).join('\n').slice(0, 60_000)}`, { label: 'wiki-digest', maxTokens: 8000 });
   writeFileSync(file, `# World digest ${date}\n\nSource: Wikipedia Current Events portal for ${date}.\n\n${r.text.trim()}\n`);
   log.info('wiki digest', { date, items: lines.length });
   return file;
@@ -55,7 +55,7 @@ export async function recordFacts(q: Question, brief: string): Promise<number> {
 
 ${brief.slice(0, 30_000)}
 
-Return only JSON: {"facts": [{"entity": "<the person, organization, place, product or indicator the fact is about>", "date": "YYYY-MM-DD", "fact": "<one sentence>", "source": "<url or source name>"}]} with at most 20 facts.`, { label: 'wiki-facts', effort: 'low', maxTokens: 6000 });
+Return only JSON: {"facts": [{"entity": "<the person, organization, place, product or indicator the fact is about>", "date": "YYYY-MM-DD", "fact": "<one sentence>", "source": "<url or source name>"}]} with at most 20 facts.`, { label: 'wiki-facts', maxTokens: 6000 });
     const facts: any[] = lastJson(r.text).facts ?? [];
     let n = 0;
     for (const f of facts) {
