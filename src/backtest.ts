@@ -10,7 +10,7 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { runAsOf } from './asof.ts';
-import { config, model } from './config.ts';
+import { config, fallbackChain, model } from './config.ts';
 import { log } from './log.ts';
 import { questionsFromPost, type Question } from './metaculus.ts';
 import { Budget, runQuestion } from './pipeline.ts';
@@ -72,7 +72,8 @@ export function participatingModels(o: BacktestOptions): string[] {
   const shadow = (process.env.FENESH_SHADOW_MODELS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
   const all = [...o.models, config.researchModel, config.fastModel, ...shadow];
   if (o.supervisor ?? true) all.push('opus-5.5');
-  return [...new Set(all)];
+  // A fallback can answer for any of them, so its cutoff counts too.
+  return [...new Set(all.flatMap((m) => [m, ...fallbackChain(m)]))];
 }
 
 // Backtest priors (src/base-rates-spring.json) use resolutions available by the end of June.

@@ -5,7 +5,7 @@
 import { config, model, type ModelSpec } from './config.ts';
 import { log } from './log.ts';
 
-export interface Usage { input: number; output: number; costUsd: number }
+export interface Usage { input: number; output: number; cacheRead?: number; cacheWrite?: number; costUsd: number } // input includes cached tokens
 
 export interface ToolSpec {
   name: string;
@@ -22,7 +22,9 @@ export interface CallOptions {
   maxToolRounds?: number;
   timeoutMs?: number;
   label?: string; // what the call is for, logged with usage
-  fallback?: string; // model to try once if this one keeps failing
+  // Model tried when this one keeps failing. Defaults to the model's own fallback (config.ts); null
+  // disables it.
+  fallback?: string | null;
 }
 
 export interface CallResult { text: string; usage: Usage; model: string; toolCalls: number }
@@ -30,9 +32,19 @@ export interface CallResult { text: string; usage: Usage; model: string; toolCal
 const UsageSink: Array<(model: string, label: string, u: Usage) => void> = [];
 export function onUsage(fn: (model: string, label: string, u: Usage) => void): void { UsageSink.push(fn); }
 
-// Cached prompt tokens bill at 10% of the input price on a read and 125% on a write (Claude on Bedrock).
-function cost(spec: ModelSpec, input: number, output: number, cacheRead = 0, cacheWrite = 0): number {
-  return (input * spec.price.input + cacheRead * spec.price.input * 0.1 + cacheWrite * spec.price.input * 1.25 + output * spec.price.output) / 1e6;
+// Cost of one request. `uncached` excludes cache reads and writes. OpenAI models bill a request with
+// more than 272K input tokens at the long-context rates (2x input and cache, 1.5x output).
+export function requestCost(spec: ModelSpec, uncached: number, output: number, cacheRead = 0, cacheWrite = 0): number {
+  const p = spec.price;
+  const long = p.longContext && uncached + cacheRead + cacheWrite > 272_000;
+  const inX = long ? 2 : 1, outX = long ? 1.5 : 1;
+  return (inX * (uncached * p.input + cacheRead * p.cacheRead + cacheWrite * p.cacheWrite) + outX * output * p.output) / 1e6;
+}
+
+// Reasoning effort never goes below medium (owner, 2026-10-05).
+const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+export function effortFor(requested: string): string {
+  return EFFORTS.indexOf(requested) < EFFORTS.indexOf('medium') ? 'medium' : requested;
 }
 
 async function post(url: string, body: unknown, timeoutMs: number): Promise<any> {
@@ -103,27 +115,24 @@ async function callConverse(spec: ModelSpec, prompt: string, o: CallOptions): Pr
   const toolConfig = o.tools?.length
     ? { tools: o.tools.map((t) => ({ toolSpec: { name: t.name, description: t.description, inputSchema: { json: t.parameters } } })) }
     : undefined;
-  let input = 0, output = 0, toolCalls = 0, cacheRead = 0, cacheWrite = 0;
-  const cacheable = spec.id.includes('anthropic') && !!toolConfig;
+  let input = 0, output = 0, toolCalls = 0, cacheRead = 0, cacheWrite = 0, usd = 0;
   for (let round = 0; ; round++) {
-    // Tool loops resend the whole conversation every round; a cache point at its end makes the next
-    // round read that prefix from cache (one point at a time, Bedrock allows four).
-    if (cacheable) {
-      for (const m of messages) m.content = m.content.filter((c: any) => !c.cachePoint);
-      messages[messages.length - 1].content.push({ cachePoint: { type: 'default' } });
-    }
+    // Always cached: a cache point at the end of the conversation so far. A repeated prompt (both
+    // forecast rounds, a revision) and every tool round read that prefix at the cache rate. One point
+    // at a time; Bedrock allows four. Prompts under the model's minimum are simply not cached.
+    for (const m of messages) m.content = m.content.filter((c: any) => !c.cachePoint);
+    messages[messages.length - 1].content.push({ cachePoint: { type: 'default' } });
     const body: any = {
       messages,
       inferenceConfig: { maxTokens: o.maxTokens ?? spec.maxTokens },
-      additionalModelRequestFields: converseExtra(spec, o.effort ?? spec.effort),
+      additionalModelRequestFields: converseExtra(spec, effortFor(o.effort ?? spec.effort)),
     };
     if (o.system) body.system = [{ text: o.system }];
     if (toolConfig) body.toolConfig = toolConfig;
     const d = await post(url, body, o.timeoutMs ?? 15 * 60_000);
-    input += d.usage?.inputTokens ?? 0;
-    output += d.usage?.outputTokens ?? 0;
-    cacheRead += d.usage?.cacheReadInputTokens ?? 0;
-    cacheWrite += d.usage?.cacheWriteInputTokens ?? 0;
+    const u = { in: d.usage?.inputTokens ?? 0, out: d.usage?.outputTokens ?? 0, read: d.usage?.cacheReadInputTokens ?? 0, write: d.usage?.cacheWriteInputTokens ?? 0 };
+    input += u.in; output += u.out; cacheRead += u.read; cacheWrite += u.write;
+    usd += requestCost(spec, u.in, u.out, u.read, u.write);
     const content: any[] = d.output?.message?.content ?? [];
     const uses = content.filter((c) => c.toolUse);
     const maxRounds = o.maxToolRounds ?? 12;
@@ -140,8 +149,7 @@ async function callConverse(spec: ModelSpec, prompt: string, o: CallOptions): Pr
       continue;
     }
     const text = content.filter((c) => typeof c.text === 'string').map((c) => c.text).join('\n');
-    if (cacheRead || cacheWrite) log.info('prompt cache', { model: spec.key, label: o.label, read: cacheRead, write: cacheWrite, uncached: input });
-    return { text, usage: { input: input + cacheRead + cacheWrite, output, costUsd: cost(spec, input, output, cacheRead, cacheWrite) }, model: spec.key, toolCalls };
+    return { text, usage: { input: input + cacheRead + cacheWrite, output, cacheRead, cacheWrite, costUsd: usd }, model: spec.key, toolCalls };
   }
 }
 
@@ -153,22 +161,28 @@ async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): P
     : `https://bedrock-mantle.${config.bedrockRegion}.api.aws/openai/v1/responses`;
   const tools = o.tools?.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters }));
   let inputItems: any[] = [{ role: 'user', content: prompt }];
-  let input = 0, output = 0, toolCalls = 0;
+  let input = 0, output = 0, toolCalls = 0, cacheRead = 0, cacheWrite = 0, usd = 0;
   for (let round = 0; ; round++) {
     const body: any = {
       model: spec.id,
       input: inputItems,
-      reasoning: { effort: o.effort ?? spec.effort },
+      reasoning: { effort: effortFor(o.effort ?? spec.effort) },
       max_output_tokens: o.maxTokens ?? spec.maxTokens,
       store: false,
+      // Always cached: these models cache any prefix of 1,024+ tokens; the key keeps requests of one
+      // kind (and every round of a tool loop) on the same cache.
+      prompt_cache_key: `fenesh:${o.label ?? 'call'}`,
     };
     if (o.system) body.instructions = o.system;
     if (tools?.length) body.tools = tools;
     const maxRounds = o.maxToolRounds ?? 12;
     if (tools?.length && round > maxRounds) body.tool_choice = 'none';
     const d = await post(url, body, o.timeoutMs ?? 15 * 60_000);
-    input += d.usage?.input_tokens ?? 0;
-    output += d.usage?.output_tokens ?? 0;
+    // input_tokens includes the cached and cache-write tokens.
+    const det = d.usage?.input_tokens_details ?? {};
+    const u = { all: d.usage?.input_tokens ?? 0, out: d.usage?.output_tokens ?? 0, read: det.cached_tokens ?? 0, write: det.cache_write_tokens ?? 0 };
+    input += u.all; output += u.out; cacheRead += u.read; cacheWrite += u.write;
+    usd += requestCost(spec, Math.max(0, u.all - u.read - u.write), u.out, u.read, u.write);
     const items: any[] = d.output ?? [];
     // A 200 can still carry a failed or cut-off response; surface it instead of returning nothing.
     if (d.status === 'failed') throw new Error(`${spec.key} response failed: ${JSON.stringify(d.error ?? {}).slice(0, 300)}`);
@@ -192,7 +206,7 @@ async function callResponses(spec: ModelSpec, prompt: string, o: CallOptions): P
       .flatMap((i) => i.content ?? [])
       .map((c: any) => c.text ?? '')
       .join('\n');
-    return { text, usage: { input, output, costUsd: cost(spec, input, output) }, model: spec.key, toolCalls };
+    return { text, usage: { input, output, cacheRead, cacheWrite, costUsd: usd }, model: spec.key, toolCalls };
   }
 }
 
@@ -219,7 +233,7 @@ export async function call(modelKey: string, prompt: string, o: CallOptions = {}
     const t0 = Date.now();
     try {
       const r = spec.transport === 'converse' ? await callConverse(spec, prompt, o) : await callResponses(spec, prompt, o);
-      log.info('llm', { model: spec.key, label: o.label, ms: Date.now() - t0, in: r.usage.input, out: r.usage.output, usd: +r.usage.costUsd.toFixed(4), tools: r.toolCalls });
+      log.info('llm', { model: spec.key, label: o.label, ms: Date.now() - t0, in: r.usage.input, cached: r.usage.cacheRead ?? 0, out: r.usage.output, usd: +r.usage.costUsd.toFixed(4), tools: r.toolCalls });
       for (const fn of UsageSink) fn(spec.key, o.label ?? '', r.usage);
       if (!r.text.trim() && r.usage.output === 0) throw new Error(`${spec.key} returned an empty reply`);
       failuresInARow.set(modelKey, 0);
@@ -231,16 +245,19 @@ export async function call(modelKey: string, prompt: string, o: CallOptions = {}
       if (attempt === 1) markFailure(modelKey);
     }
   }
-  if (o.fallback && o.fallback !== modelKey) {
-    log.warn('llm fallback', { from: spec.key, to: o.fallback, label: o.label });
-    return call(o.fallback, prompt, { ...o, fallback: undefined });
+  const next = o.fallback === null ? undefined : (o.fallback ?? spec.fallback);
+  const tried = [...((o as any)._tried ?? []), modelKey];
+  if (next && !tried.includes(next)) {
+    log.warn('llm fallback', { from: spec.key, to: next, label: o.label });
+    // The fallback's own fallback is next in line; a model already tried is never tried again.
+    return call(next, prompt, { ...o, fallback: undefined, _tried: tried } as CallOptions);
   }
   throw lastErr;
 }
 
 // The fast steps (plan, classification, market match, repair, wiki) run on one model at low effort.
 export function fast(prompt: string, o: CallOptions = {}): Promise<CallResult> {
-  return call(config.fastModel, prompt, { effort: config.fastEffort, fallback: config.fallbackModel, timeoutMs: 120_000, ...o });
+  return call(config.fastModel, prompt, { effort: config.fastEffort, timeoutMs: 120_000, ...o });
 }
 
 // Pull the last JSON object out of a model reply (models are told to end with one).
