@@ -8,8 +8,10 @@ const lastSent = new Map<string, number>();
 
 // `key` rate-limits repeats of the same condition (default once per 6 hours). Only a delivered alert
 // starts the quiet period; a failed delivery clears it so the next occurrence tries again.
-export async function alert(text: string, opts: { key?: string; everyMs?: number } = {}): Promise<void> {
-  log.error('alert', { text });
+// kind 'report' (standings) logs at info level; the relay forwards both kinds.
+export async function alert(text: string, opts: { key?: string; everyMs?: number; kind?: 'problem' | 'report' } = {}): Promise<void> {
+  if (opts.kind === 'report') log.info('alert', { text, kind: 'report' });
+  else log.error('alert', { text });
   if (opts.key) {
     if (Date.now() - (lastSent.get(opts.key) ?? 0) < (opts.everyMs ?? 6 * 3600_000)) return;
     lastSent.set(opts.key, Date.now());

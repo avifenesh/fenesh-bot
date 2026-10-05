@@ -9,7 +9,7 @@ import { log } from './log.ts';
 import { medianCdf as medianOf, rawCdf, standardize, widen as widenCdf, type Pct } from './numeric.ts';
 import type { Question } from './metaculus.ts';
 
-function db(): DatabaseSync {
+export function db(): DatabaseSync {
   const d = new DatabaseSync(`${config.dataDir}/fenesh.db`);
   d.exec('PRAGMA busy_timeout = 15000');
   d.exec(`CREATE TABLE IF NOT EXISTS outcomes (question_id INTEGER PRIMARY KEY, resolution TEXT, resolved_at TEXT, fetched_at TEXT);`);
@@ -17,7 +17,7 @@ function db(): DatabaseSync {
   return d;
 }
 
-async function fetchPostJson(postId: number): Promise<any> {
+export async function fetchPostJson(postId: number): Promise<any> {
   const res = await fetch(`${config.metaculusBase}/posts/${postId}/`, {
     headers: { Authorization: `Token ${config.metaculusToken}`, 'Accept-Language': 'en' },
     signal: AbortSignal.timeout(30_000),
@@ -26,12 +26,17 @@ async function fetchPostJson(postId: number): Promise<any> {
   return res.json();
 }
 
-// Pull resolutions for every forecast question that has closed and is not yet resolved in our table.
+// Pull resolutions for every forecast question that has closed and is not yet resolved in our table, and
+// peer scores Metaculus had not computed yet at the last sync (re-checked for a week). Returns how many
+// questions resolved since the last sync.
 export async function syncOutcomes(): Promise<number> {
   const d = db();
-  const rows = d.prepare(`SELECT DISTINCT r.question_id, r.post_id FROM runs r
+  const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const rows = d.prepare(`SELECT DISTINCT r.question_id, r.post_id, o.resolution AS prev FROM runs r
     LEFT JOIN outcomes o ON o.question_id = r.question_id
-    WHERE r.status IN ('submitted','dry_run') AND (o.resolution IS NULL) AND r.close_time < ?`).all(new Date().toISOString()) as any[];
+    WHERE r.status IN ('submitted','dry_run') AND r.close_time < ?
+      AND (o.resolution IS NULL OR (r.status = 'submitted' AND o.peer_score IS NULL
+        AND o.resolution NOT IN ('annulled', 'ambiguous') AND o.resolved_at > ?))`).all(new Date().toISOString(), weekAgo) as any[];
   let n = 0;
   for (const r of rows) {
     try {
@@ -41,8 +46,8 @@ export async function syncOutcomes(): Promise<number> {
       if (!q || q.resolution == null || q.resolution === '') continue;
       const peer = q.my_forecasts?.score_data?.peer_score ?? q.my_forecasts?.score_data?.spot_peer_score ?? null;
       d.prepare(`INSERT OR REPLACE INTO outcomes (question_id, resolution, resolved_at, fetched_at, peer_score) VALUES (?, ?, ?, ?, ?)`)
-        .run(r.question_id, String(q.resolution), q.actual_resolve_time ?? null, new Date().toISOString(), peer);
-      n++;
+        .run(r.question_id, String(q.resolution), q.actual_resolve_time ?? new Date().toISOString(), new Date().toISOString(), peer);
+      if (r.prev == null) n++;
       await new Promise((res) => setTimeout(res, 700));
     } catch (e: any) {
       log.warn('outcome sync', { q: r.question_id, err: e.message });

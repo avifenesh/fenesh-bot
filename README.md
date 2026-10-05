@@ -41,6 +41,10 @@ can be scored when questions resolve.
   `{"msg":"alert"}`. `deploy/alert-relay.sh` runs on the owner's machine every 2 minutes
   (`deploy/fenesh-alert-relay.timer`), reads them from the host's journal over SSH and sends them to the
   owner's phone with `hermes send`. `FENESH_ALERT_WEBHOOK` is an optional extra channel.
+- After every outcome sync (every 6 hours) that finds new resolutions, the bot sends the owner a standings
+  report the same way: questions resolved, mean peer score, rank on each leaderboard Metaculus has
+  published, Brier and log score against the base rate and a coin, and the best ensemble members.
+  `node src/cli.ts standings [--send]` prints it on demand.
 
 ## Models
 
