@@ -63,14 +63,19 @@ export function retryAfterMs(h: string | null, now = Date.now()): number | null 
   return Number.isFinite(t) ? Math.max(0, t - now) : null;
 }
 
-async function slot(): Promise<void> {
+// Wait for this request's turn. Turns are `gap` apart; a 429 pauses every caller, and a caller woken
+// into a pause set after it queued takes a fresh turn behind the pause, so the queue stays spaced
+// instead of firing together when the pause ends. A caller that will not wait `maxWait` gives up.
+async function slot(path: string, maxWait: number): Promise<void> {
   const gap = Number(process.env.FENESH_METACULUS_GAP_MS ?? 1000);
-  const now = Date.now();
-  const at = Math.max(now, nextSlot, pausedUntil);
-  nextSlot = at + gap;
-  if (at > now) await sleep(at - now);
-  // A 429 seen while this request was queued pushes it back too.
-  if (pausedUntil > Date.now()) await sleep(pausedUntil - Date.now());
+  for (;;) {
+    const now = Date.now();
+    if (pausedUntil - now > maxWait) throw new MetaculusRateLimited(path, pausedUntil - now);
+    const at = Math.max(now, nextSlot, pausedUntil);
+    nextSlot = at + gap;
+    if (at > now) await sleep(at - now);
+    if (pausedUntil <= Date.now()) return;
+  }
 }
 
 export interface ApiOptions {
@@ -82,7 +87,7 @@ export async function api(path: string, init: RequestInit = {}, o: ApiOptions = 
   const attempts = o.attempts ?? 5, maxWait = o.maxWaitMs ?? 5 * 60_000;
   const base = Number(process.env.FENESH_METACULUS_BACKOFF_MS ?? 5000);
   for (let attempt = 0; ; attempt++) {
-    await slot();
+    await slot(path, maxWait);
     const res = await fetch(`${config.metaculusBase}${path}`, {
       ...init,
       headers: {
@@ -177,18 +182,12 @@ export async function openQuestions(tournament: string | number): Promise<Questi
   return out;
 }
 
-// Several posts in one request (the feed's `ids` filter). The feed leaves out `my_forecasts`, so peer
-// scores still need the single-post endpoint.
+// Several posts in one request (the feed's `ids` filter, at most 25 per call). The feed leaves out
+// `my_forecasts`, so peer scores still need the single-post endpoint.
 export async function postsByIds(ids: number[], o: ApiOptions = {}): Promise<any[]> {
-  const out: any[] = [];
-  for (let i = 0; i < ids.length; i += 25) {
-    const chunk = ids.slice(i, i + 25);
-    const params = new URLSearchParams({ limit: String(chunk.length), with_cp: 'false' });
-    for (const id of chunk) params.append('ids', String(id));
-    const d = await api(`/posts/?${params}`, {}, o);
-    out.push(...(d?.results ?? []));
-  }
-  return out;
+  const params = new URLSearchParams({ limit: String(ids.length), with_cp: 'false' });
+  for (const id of ids) params.append('ids', String(id));
+  return (await api(`/posts/?${params}`, {}, o))?.results ?? [];
 }
 
 export async function getPost(postId: number): Promise<Question[]> {

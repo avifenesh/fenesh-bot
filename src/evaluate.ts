@@ -42,22 +42,26 @@ export async function syncOutcomes(): Promise<number> {
   const save = d.prepare(`INSERT OR REPLACE INTO outcomes (question_id, resolution, resolved_at, fetched_at, peer_score) VALUES (?, ?, ?, ?, ?)`);
   let n = 0, resolvedSeen = 0, requests = 0;
   try {
-    const feed = new Map<number, any>();
+    // One feed page at a time, saved before the next is asked for, so a rate limit keeps the progress.
     const postIds = [...new Set(rows.map((r) => r.post_id as number))];
-    requests += Math.ceil(postIds.length / 25);
-    for (const p of await postsByIds(postIds, SYNC_API)) for (const q of questionsOf(p)) feed.set(q.id, q);
-    for (const r of rows) {
-      let q = feed.get(r.question_id);
-      if (!q || q.resolution == null || q.resolution === '') continue;
-      resolvedSeen++;
-      const scored = !['annulled', 'ambiguous'].includes(String(q.resolution));
-      if (r.submitted && scored) {
-        requests++;
-        q = questionsOf(await fetchPostJson(r.post_id, SYNC_API)).find((x) => x.id === r.question_id) ?? q;
+    for (let i = 0; i < postIds.length; i += 25) {
+      const page = new Set(postIds.slice(i, i + 25));
+      const feed = new Map<number, any>();
+      requests++;
+      for (const p of await postsByIds([...page], SYNC_API)) for (const q of questionsOf(p)) feed.set(q.id, q);
+      for (const r of rows.filter((x) => page.has(x.post_id))) {
+        let q = feed.get(r.question_id);
+        if (!q || q.resolution == null || q.resolution === '') continue;
+        resolvedSeen++;
+        const scored = !['annulled', 'ambiguous'].includes(String(q.resolution));
+        if (r.submitted && scored) {
+          requests++;
+          q = questionsOf(await fetchPostJson(r.post_id, SYNC_API)).find((x) => x.id === r.question_id) ?? q;
+        }
+        const peer = q.my_forecasts?.score_data?.peer_score ?? q.my_forecasts?.score_data?.spot_peer_score ?? null;
+        save.run(r.question_id, String(q.resolution), q.actual_resolve_time ?? new Date().toISOString(), new Date().toISOString(), peer);
+        if (r.prev == null) n++;
       }
-      const peer = q.my_forecasts?.score_data?.peer_score ?? q.my_forecasts?.score_data?.spot_peer_score ?? null;
-      save.run(r.question_id, String(q.resolution), q.actual_resolve_time ?? new Date().toISOString(), new Date().toISOString(), peer);
-      if (r.prev == null) n++;
     }
   } catch (e: any) {
     // Rate limited (or Metaculus down): keep what was saved, resume next cycle.

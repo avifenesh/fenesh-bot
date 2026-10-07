@@ -29,6 +29,8 @@ beforeAll(async () => {
     const m = u.pathname.match(/^\/api\/posts\/(\d+)\/$/);
     if (m && limited.has(Number(m[1]))) return json(429, { detail: 'throttled' }, { 'retry-after': '1' });
     if (m) return json(200, post(Number(m[1]), true));
+    if (u.pathname === '/api/limited/') return json(429, {}, { 'retry-after': u.searchParams.get('after') ?? '1' });
+    if (u.pathname === '/api/ok/') return json(200, { ok: true });
     json(404, {});
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -52,12 +54,12 @@ describe('outcome sync', () => {
     const { syncOutcomes, db } = await import('../src/evaluate.ts');
 
     const n1 = await syncOutcomes();
-    // Two feed pages (25 + 5 posts), the peer score of q1, then q2 answers 429 twice (Retry-After 1 s)
-    // and the batch stops: nothing is asked about q3 or q4.
-    expect(hits.map((h) => h.path.replace(/\?.*/, ''))).toEqual(['/api/posts/', '/api/posts/', '/api/posts/1001/', '/api/posts/1002/', '/api/posts/1002/']);
+    // The first feed page (25 posts), the peer score of q1, then q2 answers 429 twice (Retry-After 1 s)
+    // and the batch stops: nothing is asked about q3, q4 or the second page. q1 is saved.
+    expect(hits.map((h) => h.path.replace(/\?.*/, ''))).toEqual(['/api/posts/', '/api/posts/1001/', '/api/posts/1002/', '/api/posts/1002/']);
     expect(new URL(`http://x${hits[0].path}`).searchParams.getAll('ids')).toHaveLength(25);
     for (let i = 1; i < hits.length; i++) expect(hits[i].t - hits[i - 1].t).toBeGreaterThanOrEqual(120); // 150 ms gap, less timer slack
-    expect(hits[4].t - hits[3].t).toBeGreaterThanOrEqual(950); // Retry-After honored
+    expect(hits[3].t - hits[2].t).toBeGreaterThanOrEqual(950); // Retry-After honored
     expect(n1).toBe(1);
     expect(db().prepare('SELECT question_id, resolution, peer_score FROM outcomes').all()).toEqual([{ question_id: 1, resolution: 'yes', peer_score: 1.5 }]);
 
@@ -66,7 +68,7 @@ describe('outcome sync', () => {
     hits.length = 0;
     const n2 = await syncOutcomes();
     expect(n2).toBe(3);
-    expect(hits.map((h) => h.path.replace(/\?.*/, ''))).toEqual(['/api/posts/', '/api/posts/', '/api/posts/1002/', '/api/posts/1003/']);
+    expect(hits.map((h) => h.path.replace(/\?.*/, ''))).toEqual(['/api/posts/', '/api/posts/1002/', '/api/posts/1003/', '/api/posts/']);
     const rows = db().prepare('SELECT question_id, resolution, peer_score FROM outcomes ORDER BY question_id').all();
     expect(rows).toEqual([
       { question_id: 1, resolution: 'yes', peer_score: 1.5 },
@@ -75,6 +77,29 @@ describe('outcome sync', () => {
       { question_id: 4, resolution: 'annulled', peer_score: null },
     ]);
   }, 30_000);
+});
+
+describe('request queue', () => {
+  it('keeps callers queued behind a 429 spaced, and lets a caller refuse a long shared pause', async () => {
+    const { api, MetaculusRateLimited } = await import('../src/metaculus.ts');
+    await new Promise((r) => setTimeout(r, 1200)); // let the sync test's pause run out
+    hits.length = 0;
+    // The first request is told to wait 1 s and gives up (one attempt); two callers queued behind it
+    // must not fire together when the pause ends.
+    const limited = api('/limited/?after=1', {}, { attempts: 1 }).catch((e) => e);
+    const a = api('/ok/?a'), b = api('/ok/?b');
+    expect(await limited).toBeInstanceOf(MetaculusRateLimited);
+    await Promise.all([a, b]);
+    const [l, x, y] = hits;
+    expect(x.t - l.t).toBeGreaterThanOrEqual(950);
+    expect(y.t - x.t).toBeGreaterThanOrEqual(120);
+
+    // A long pause set by another caller: a caller that accepts 60 s gives up at once instead of waiting.
+    await api('/limited/?after=3600', {}, { attempts: 1 }).catch(() => {});
+    const t0 = Date.now();
+    await expect(api('/ok/?c', {}, { maxWaitMs: 60_000 })).rejects.toBeInstanceOf(MetaculusRateLimited);
+    expect(Date.now() - t0).toBeLessThan(100);
+  }, 20_000);
 });
 
 describe('retry-after', () => {
