@@ -1,0 +1,27 @@
+{
+ "note": "Replies of gpt-6-astra and gpt-6.1-sol to the q46123 forecast prompt (archived brief), replayed 2026-10-07. Both put every percentile on 3; the live run on 2026-10-06 dropped both as \"need at least two usable percentiles\". Only the closing table and JSON block are kept.",
+ "question": {
+  "questionId": 46123,
+  "type": "discrete",
+  "title": "How many of three recommended judges (Agarwal, Upadhyaya, Singh) will be serving Supreme Court of India judges by October 17, 2026?",
+  "scaling": {
+   "rangeMin": -0.5,
+   "rangeMax": 3.5,
+   "zeroPoint": null,
+   "openLower": false,
+   "openUpper": false,
+   "cdfSize": 5,
+   "grid": [
+    -0.5,
+    0.5,
+    1.5,
+    2.5,
+    3.5
+   ]
+  }
+ },
+ "replies": {
+  "gpt-6-astra": "| Outcome (judges) | Probability |\n|---|---:|\n| 0 | 0.05% |\n| 1 | 0.05% |\n| 2 | 0.40% |\n| 3 | 99.50% |\n\nBecause this is a bounded, discrete outcome with more than 99% probability on 3, all requested percentiles equal 3. Repeated percentile values are appropriate; spreading them artificially would misrepresent the forecast.\n\n```json\n{\n  \"percentiles\": {\n    \"1\": 3,\n    \"5\": 3,\n    \"10\": 3,\n    \"20\": 3,\n    \"30\": 3,\n    \"40\": 3,\n    \"50\": 3,\n    \"60\": 3,\n    \"70\": 3,\n    \"80\": 3,\n    \"90\": 3,\n    \"95\": 3,\n    \"99\": 3\n  },\n  \"summary\": \"The supplied evidence places all three judges on the official sitting-judges list after completed oaths before the forecast cutoff, with no retirement scheduled before October 17. I assign 99.5% probability to 3, reserving 0.5% for unexpected departures or material evidence errors.\"\n}\n```",
+  "gpt-6.1-sol": "| Outcome: judges serving | Probability |\n|---|---:|\n| 0 | 0.02% |\n| 1 | 0.03% |\n| 2 | 0.25% |\n| 3 | 99.70% |\n\nBecause this is a discrete distribution with less than 1% probability below 3, **all requested percentiles equal 3**. Repeated values are appropriate here; the quantiles are nondecreasing.\n\n```json\n{\"percentiles\":{\"1\":3,\"5\":3,\"10\":3,\"20\":3,\"30\":3,\"40\":3,\"50\":3,\"60\":3,\"70\":3,\"80\":3,\"90\":3,\"95\":3,\"99\":3},\"summary\":\"The supplied brief reports that all three judges took oath and appeared on the official sitting-judges list on 6 October, before the forecast cutoff. With no scheduled retirements before 17 October, I assign 99.7% probability to all three remaining qualifying judges and 0.3% to exceptional departures or evidence errors.\"}\n```"
+ }
+}

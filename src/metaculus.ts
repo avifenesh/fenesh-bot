@@ -12,6 +12,7 @@ export interface Scaling {
   openLower: boolean;
   openUpper: boolean;
   cdfSize: number; // inbound_outcome_count + 1
+  discrete?: boolean; // one bucket per outcome (missing on questions archived before the flag)
   grid: unknown[] | null; // continuous_range as the API sends it (numbers, or ISO dates for date questions)
 }
 
@@ -37,13 +38,51 @@ export interface Question {
   url: string;
 }
 
-let lastRequest = 0;
-async function api(path: string, init: RequestInit = {}): Promise<any> {
-  // Stay well under any rate limit: at most one request per 600 ms.
-  const wait = lastRequest + 600 - Date.now();
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  lastRequest = Date.now();
-  for (let attempt = 0; attempt < 5; attempt++) {
+// Every Metaculus request goes through api(): requests are spaced (FENESH_METACULUS_GAP_MS, default 1 s,
+// one queue for the whole process), a 429 honors Retry-After (or backs off exponentially with jitter)
+// and pauses every caller until then. A caller that cannot wait long (the outcome sync) gets a
+// MetaculusRateLimited error and stops its batch; the next cycle resumes it.
+export class MetaculusRateLimited extends Error {
+  retryAfterMs: number;
+  constructor(path: string, retryAfterMs: number) {
+    super(`metaculus 429 ${path}: rate limited, retry after ${Math.ceil(retryAfterMs / 1000)} s`);
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+let nextSlot = 0;
+let pausedUntil = 0;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Retry-After is either delay seconds or an HTTP date.
+export function retryAfterMs(h: string | null, now = Date.now()): number | null {
+  if (!h) return null;
+  const s = Number(h);
+  if (Number.isFinite(s)) return Math.max(0, s * 1000);
+  const t = Date.parse(h);
+  return Number.isFinite(t) ? Math.max(0, t - now) : null;
+}
+
+async function slot(): Promise<void> {
+  const gap = Number(process.env.FENESH_METACULUS_GAP_MS ?? 1000);
+  const now = Date.now();
+  const at = Math.max(now, nextSlot, pausedUntil);
+  nextSlot = at + gap;
+  if (at > now) await sleep(at - now);
+  // A 429 seen while this request was queued pushes it back too.
+  if (pausedUntil > Date.now()) await sleep(pausedUntil - Date.now());
+}
+
+export interface ApiOptions {
+  attempts?: number; // total tries on 429 / 5xx (default 5)
+  maxWaitMs?: number; // longest single back-off this caller accepts before giving up (default 5 min)
+}
+
+export async function api(path: string, init: RequestInit = {}, o: ApiOptions = {}): Promise<any> {
+  const attempts = o.attempts ?? 5, maxWait = o.maxWaitMs ?? 5 * 60_000;
+  const base = Number(process.env.FENESH_METACULUS_BACKOFF_MS ?? 5000);
+  for (let attempt = 0; ; attempt++) {
+    await slot();
     const res = await fetch(`${config.metaculusBase}${path}`, {
       ...init,
       headers: {
@@ -52,16 +91,23 @@ async function api(path: string, init: RequestInit = {}): Promise<any> {
         'content-type': 'application/json',
         ...(init.headers ?? {}),
       },
+      signal: init.signal ?? AbortSignal.timeout(60_000),
     });
     const text = await res.text();
     if (res.ok) return text ? JSON.parse(text) : null;
-    if (res.status === 429 || res.status >= 500) {
-      await new Promise((r) => setTimeout(r, 3000 * 2 ** attempt));
-      continue;
+    if (res.status !== 429 && res.status < 500) throw new Error(`metaculus ${res.status} ${path}: ${text.slice(0, 400)}`);
+    // Exponential back-off with jitter (half fixed, half random), unless the server says how long to wait.
+    const backoff = Math.min(120_000, base * 2 ** attempt);
+    const wait = retryAfterMs(res.headers.get('retry-after')) ?? backoff / 2 + Math.random() * backoff / 2;
+    if (res.status === 429) {
+      pausedUntil = Math.max(pausedUntil, Date.now() + wait);
+      log.warn('metaculus rate limit', { path, attempt, waitMs: Math.round(wait) });
+      if (attempt + 1 >= attempts || wait > maxWait) throw new MetaculusRateLimited(path, wait);
+    } else if (attempt + 1 >= attempts) {
+      throw new Error(`metaculus ${res.status} ${path}: ${text.slice(0, 400)}`);
     }
-    throw new Error(`metaculus ${res.status} ${path}: ${text.slice(0, 400)}`);
+    if (res.status !== 429) await sleep(Math.min(wait, maxWait));
   }
-  throw new Error(`metaculus: gave up on ${path}`);
 }
 
 function scalingOf(q: any): Scaling | null {
@@ -74,6 +120,7 @@ function scalingOf(q: any): Scaling | null {
     openLower: !!(s.open_lower_bound ?? q.open_lower_bound),
     openUpper: !!(s.open_upper_bound ?? q.open_upper_bound),
     cdfSize: (s.inbound_outcome_count ?? 200) + 1,
+    discrete: q.type === 'discrete',
     grid: Array.isArray(s.continuous_range) ? s.continuous_range : null,
   };
 }
@@ -126,6 +173,20 @@ export async function openQuestions(tournament: string | number): Promise<Questi
     for (const p of results) out.push(...questionsFromPost(p));
     // The API returns a `next` link even on the last page, so stop on a short page.
     if (results.length < 100 || !d.next) break;
+  }
+  return out;
+}
+
+// Several posts in one request (the feed's `ids` filter). The feed leaves out `my_forecasts`, so peer
+// scores still need the single-post endpoint.
+export async function postsByIds(ids: number[], o: ApiOptions = {}): Promise<any[]> {
+  const out: any[] = [];
+  for (let i = 0; i < ids.length; i += 25) {
+    const chunk = ids.slice(i, i + 25);
+    const params = new URLSearchParams({ limit: String(chunk.length), with_cp: 'false' });
+    for (const id of chunk) params.append('ids', String(id));
+    const d = await api(`/posts/?${params}`, {}, o);
+    out.push(...(d?.results ?? []));
   }
   return out;
 }

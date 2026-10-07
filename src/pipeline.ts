@@ -142,7 +142,7 @@ ${brief}
   }
 }
 
-function parseForecast(q: Question, j: any): Pick<ForecasterOutput, 'pYes' | 'probs' | 'pcts' | 'summary'> {
+export function parseForecast(q: Question, j: any): Pick<ForecasterOutput, 'pYes' | 'probs' | 'pcts' | 'summary'> {
   const summary = typeof j.summary === 'string' ? j.summary : undefined;
   if (q.type === 'binary') {
     const y = Number(j.p_yes), n = Number(j.p_no);
@@ -176,10 +176,11 @@ function parseForecast(q: Question, j: any): Pick<ForecasterOutput, 'pYes' | 'pr
 }
 
 async function forecastOne(q: Question, modelKey: string, brief: string, extra: string, b: Budget): Promise<ForecasterOutput> {
-  let costUsd = 0;
+  let costUsd = 0, raw = '';
   try {
     const r = await call(modelKey, forecastPrompt(q, brief, extra), { label: 'forecast', timeoutMs: 600_000 });
     costUsd += r.usage.costUsd;
+    raw = r.text;
     let parsed;
     try { parsed = parseForecast(q, lastJson(r.text)); }
     catch {
@@ -195,7 +196,8 @@ async function forecastOne(q: Question, modelKey: string, brief: string, extra: 
   } catch (e: any) {
     b.add(costUsd);
     log.warn('forecaster failed', { q: q.questionId, model: modelKey, err: e.message });
-    return { model: modelKey, ok: false, error: e.message, costUsd };
+    // Keep the reply of a forecaster whose answer could not be parsed, so the failure can be studied.
+    return { model: modelKey, ok: false, error: e.message, costUsd, ...(raw ? { reasoning: raw.slice(0, 20_000) } : {}) };
   }
 }
 
