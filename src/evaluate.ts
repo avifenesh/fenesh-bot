@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { config } from './config.ts';
 import { log } from './log.ts';
 import { medianCdf as medianOf, rawCdf, standardize, widen as widenCdf, type Pct } from './numeric.ts';
-import type { Question } from './metaculus.ts';
+import { api, MetaculusRateLimited, postsByIds, type ApiOptions, type Question } from './metaculus.ts';
 
 export function db(): DatabaseSync {
   const d = new DatabaseSync(`${config.dataDir}/fenesh.db`);
@@ -17,43 +17,57 @@ export function db(): DatabaseSync {
   return d;
 }
 
-export async function fetchPostJson(postId: number): Promise<any> {
-  const res = await fetch(`${config.metaculusBase}/posts/${postId}/`, {
-    headers: { Authorization: `Token ${config.metaculusToken}`, 'Accept-Language': 'en' },
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) throw new Error(`metaculus ${res.status}`);
-  return res.json();
+export async function fetchPostJson(postId: number, o: ApiOptions = {}): Promise<any> {
+  return api(`/posts/${postId}/`, {}, o);
 }
 
+// The sync runs in the background every few hours, so it never waits out a long rate limit: one retry,
+// at most a minute of back-off, then it stops and the next cycle picks up where it left off.
+const SYNC_API: ApiOptions = { attempts: 2, maxWaitMs: 60_000 };
+
 // Pull resolutions for every forecast question that has closed and is not yet resolved in our table, and
-// peer scores Metaculus had not computed yet at the last sync (re-checked for a week). Returns how many
-// questions resolved since the last sync.
+// peer scores Metaculus had not computed yet at the last sync (re-checked for a week). Resolutions come
+// from the feed, 25 posts per request; only resolved questions we submitted need the single-post endpoint,
+// for the peer score. Returns how many questions resolved since the last sync.
 export async function syncOutcomes(): Promise<number> {
   const d = db();
   const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
-  const rows = d.prepare(`SELECT DISTINCT r.question_id, r.post_id, o.resolution AS prev FROM runs r
+  const rows = d.prepare(`SELECT r.question_id, r.post_id, MAX(r.status = 'submitted') AS submitted, o.resolution AS prev FROM runs r
     LEFT JOIN outcomes o ON o.question_id = r.question_id
     WHERE r.status IN ('submitted','dry_run') AND r.close_time < ?
       AND (o.resolution IS NULL OR (r.status = 'submitted' AND o.peer_score IS NULL
-        AND o.resolution NOT IN ('annulled', 'ambiguous') AND o.resolved_at > ?))`).all(new Date().toISOString(), weekAgo) as any[];
-  let n = 0;
-  for (const r of rows) {
-    try {
-      const post = await fetchPostJson(r.post_id);
-      const qs: any[] = post.question ? [post.question] : (post.group_of_questions?.questions ?? []);
-      const q = qs.find((x) => x.id === r.question_id);
-      if (!q || q.resolution == null || q.resolution === '') continue;
-      const peer = q.my_forecasts?.score_data?.peer_score ?? q.my_forecasts?.score_data?.spot_peer_score ?? null;
-      d.prepare(`INSERT OR REPLACE INTO outcomes (question_id, resolution, resolved_at, fetched_at, peer_score) VALUES (?, ?, ?, ?, ?)`)
-        .run(r.question_id, String(q.resolution), q.actual_resolve_time ?? new Date().toISOString(), new Date().toISOString(), peer);
-      if (r.prev == null) n++;
-      await new Promise((res) => setTimeout(res, 700));
-    } catch (e: any) {
-      log.warn('outcome sync', { q: r.question_id, err: e.message });
+        AND o.resolution NOT IN ('annulled', 'ambiguous') AND o.resolved_at > ?))
+    GROUP BY r.question_id`).all(new Date().toISOString(), weekAgo) as any[];
+  const questionsOf = (post: any): any[] => (post?.question ? [post.question] : (post?.group_of_questions?.questions ?? []));
+  const save = d.prepare(`INSERT OR REPLACE INTO outcomes (question_id, resolution, resolved_at, fetched_at, peer_score) VALUES (?, ?, ?, ?, ?)`);
+  let n = 0, resolvedSeen = 0, requests = 0;
+  try {
+    // One feed page at a time, saved before the next is asked for, so a rate limit keeps the progress.
+    const postIds = [...new Set(rows.map((r) => r.post_id as number))];
+    for (let i = 0; i < postIds.length; i += 25) {
+      const page = new Set(postIds.slice(i, i + 25));
+      const feed = new Map<number, any>();
+      requests++;
+      for (const p of await postsByIds([...page], SYNC_API)) for (const q of questionsOf(p)) feed.set(q.id, q);
+      for (const r of rows.filter((x) => page.has(x.post_id))) {
+        let q = feed.get(r.question_id);
+        if (!q || q.resolution == null || q.resolution === '') continue;
+        resolvedSeen++;
+        const scored = !['annulled', 'ambiguous'].includes(String(q.resolution));
+        if (r.submitted && scored) {
+          requests++;
+          q = questionsOf(await fetchPostJson(r.post_id, SYNC_API)).find((x) => x.id === r.question_id) ?? q;
+        }
+        const peer = q.my_forecasts?.score_data?.peer_score ?? q.my_forecasts?.score_data?.spot_peer_score ?? null;
+        save.run(r.question_id, String(q.resolution), q.actual_resolve_time ?? new Date().toISOString(), new Date().toISOString(), peer);
+        if (r.prev == null) n++;
+      }
     }
+  } catch (e: any) {
+    // Rate limited (or Metaculus down): keep what was saved, resume next cycle.
+    log.warn('outcome sync stopped early', { err: e.message, rateLimited: e instanceof MetaculusRateLimited, saved: n });
   }
-  log.info('outcomes synced', { checked: rows.length, resolved: n });
+  log.info('outcomes synced', { checked: rows.length, resolved: resolvedSeen, newlyResolved: n, requests });
   return n;
 }
 

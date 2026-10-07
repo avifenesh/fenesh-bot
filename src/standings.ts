@@ -3,10 +3,9 @@
 // against simple baselines, and the best ensemble members.
 
 import { readFileSync } from 'node:fs';
-import { config } from './config.ts';
 import { db, fetchPostJson, logScore, report } from './evaluate.ts';
 import { log } from './log.ts';
-import type { Question } from './metaculus.ts';
+import { api, type Question } from './metaculus.ts';
 import { standardize } from './numeric.ts';
 
 const RATES = JSON.parse(readFileSync(new URL('./base-rates.json', import.meta.url), 'utf8'));
@@ -19,11 +18,7 @@ const signed = (x: number) => (x >= 0 ? `+${x.toFixed(1)}` : x.toFixed(1));
 // Our row on a project's leaderboard, if Metaculus has published entries yet.
 async function leaderboardLine(projectId: number, name: string): Promise<string> {
   try {
-    const res = await fetch(`${config.metaculusBase}/leaderboards/project/${projectId}/`, {
-      headers: { Authorization: `Token ${config.metaculusToken}` }, signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) return `${name}: leaderboard unavailable (HTTP ${res.status})`;
-    const body = await res.json();
+    const body = await api(`/leaderboards/project/${projectId}/`, {}, { attempts: 2, maxWaitMs: 60_000 });
     const boards: any[] = Array.isArray(body) ? body : [body];
     const board = boards.find((b) => b?.is_primary_leaderboard) ?? boards[0];
     const entries: any[] = board?.entries ?? [];
@@ -58,7 +53,7 @@ export async function standingsReport(newlyResolved: number): Promise<string> {
   for (const postId of [...representative.values()].slice(0, 6)) {
     const r = { post_id: postId };
     try {
-      const pr = (await fetchPostJson(r.post_id)).projects ?? {};
+      const pr = (await fetchPostJson(r.post_id, { attempts: 2, maxWaitMs: 60_000 })).projects ?? {};
       for (const p of [...(pr.tournament ?? []), ...(pr.question_series ?? []), pr.default_project]) {
         if (p?.id && p.type !== 'site_main' && p.type !== 'category' && !projects.has(p.id)) projects.set(p.id, { name: p.name ?? p.slug ?? String(p.id) });
       }

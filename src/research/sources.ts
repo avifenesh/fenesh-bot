@@ -3,7 +3,9 @@
 
 import type { Question } from '../metaculus.ts';
 import type { ToolSpec } from '../llm.ts';
+import { alert, clearAlert } from '../alert.ts';
 import { log } from '../log.ts';
+import { getState, setState } from '../state.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { asOfMs, liveOnly, nowMs } from '../asof.ts';
@@ -34,12 +36,23 @@ export interface ResearchSource {
   tools(): ToolSpec[];
 }
 
-// Sources that answer 429 are skipped for a while instead of being hit on every call.
-const coolUntil = new Map<string, number>();
+// Sources that answer 429 are skipped for a while instead of being hit on every call. The cooldown is
+// kept across restarts (src/state.ts).
 function cooling(name: string): void {
-  if ((coolUntil.get(name) ?? 0) > Date.now()) throw new Error(`${name} rate-limited, cooling down`);
+  if ((getState(`cool:${name}`) ?? 0) > Date.now()) throw new Error(`${name} rate-limited, cooling down`);
 }
-function cool(name: string, minutes = 10): void { coolUntil.set(name, Date.now() + minutes * 60_000); }
+function cool(name: string, minutes = 10): void { setState(`cool:${name}`, Date.now() + minutes * 60_000); }
+
+// A source that keeps refusing gets a longer cooldown each time: 10 minutes, doubling up to `maxMinutes`,
+// back to the start after a success.
+function coolLonger(name: string, maxMinutes: number): number {
+  const strikes = (getState(`strikes:${name}`) ?? 0) + 1;
+  setState(`strikes:${name}`, strikes);
+  const minutes = Math.min(maxMinutes, 10 * 2 ** (strikes - 1));
+  cool(name, minutes);
+  return minutes;
+}
+function coolReset(name: string): void { if (getState(`strikes:${name}`) !== undefined) setState(`strikes:${name}`, undefined); }
 
 // ---------- GDELT news (keyless; one request per 5 s) ----------
 
@@ -56,7 +69,13 @@ async function gdeltSearch(query: string, days = 30, max = 15): Promise<Evidence
   u.search = new URLSearchParams(params).toString();
   cooling('gdelt');
   const r = await get(u.toString(), { timeoutMs: 30_000 });
-  if (r.status === 429 || /limit requests/i.test(r.text.slice(0, 200))) { cool('gdelt'); throw new Error('gdelt rate-limited'); }
+  // GDELT refuses whole address ranges for long stretches (on 2026-10-07 it answered 429 to a single
+  // request after a quiet hour, from two networks), so repeated refusals back off up to a day.
+  if (r.status === 429 || /limit requests/i.test(r.text.slice(0, 200))) {
+    const minutes = coolLonger('gdelt', 24 * 60);
+    throw new Error(`gdelt rate-limited, skipped for ${minutes} min`);
+  }
+  coolReset('gdelt');
   if (!r.text.startsWith('{')) return []; // GDELT answers plain-text errors for bad queries
   const d = JSON.parse(r.text);
   return (d.articles ?? []).map((a: any) => ({
@@ -91,6 +110,7 @@ let askDay = '', askUsed = 0;
 // FENESH_ASKNEWS_TIMEOUT_MS (default 15 s), and two failures in a row skip AskNews for 30 minutes.
 const ASK_TIMEOUT_MS = Number(process.env.FENESH_ASKNEWS_TIMEOUT_MS ?? 15_000);
 let askFailures = 0;
+const ASK_EMPTY_WALLET_HOURS = Number(process.env.FENESH_ASKNEWS_402_HOURS ?? 6);
 function askFailed(): void {
   if (++askFailures >= 2) { cool('asknews', 30); askFailures = 0; log.warn('asknews failing, skipped for 30 minutes'); }
 }
@@ -122,11 +142,18 @@ async function askNewsSearch(query: string, n = 8, days = 30): Promise<Evidence[
   if (r.status >= 400) {
     release();
     if (r.status === 429) { cool('asknews'); throw new Error('asknews HTTP 429'); }
-    // 402: the wallet is empty. Back off for hours instead of failing on every question.
-    if (r.status === 402) { cool('asknews', 360); throw new Error('asknews HTTP 402: wallet empty'); }
+    // 402: the wallet is empty. Back off for hours instead of failing on every question, and tell the
+    // owner once per empty spell (cleared by the next successful search), not on every call.
+    if (r.status === 402) {
+      cool('asknews', ASK_EMPTY_WALLET_HOURS * 60);
+      void alert(`AskNews wallet is empty (HTTP 402): news search is off for ${ASK_EMPTY_WALLET_HOURS} h at a time until it is topped up (my.asknews.app/settings/wallet). The bot runs on the other sources meanwhile.`,
+        { key: 'asknews-402', everyMs: 30 * 86_400_000 });
+      throw new Error('asknews HTTP 402: wallet empty');
+    }
     throw new Error(`asknews HTTP ${r.status}: ${r.text.slice(0, 200)}`);
   }
   askFailures = 0;
+  clearAlert('asknews-402');
   const d = JSON.parse(r.text);
   return (d.as_dicts ?? [])
     // Never let an article from after the as-of moment into a backtest.
@@ -174,9 +201,14 @@ export async function harnessSearch(query: string, n = 8, bin = WEBSEARCH_BIN): 
     p.stderr.on('data', (d) => { err += d; });
     p.on('error', (e) => { clearTimeout(timer); reject(e); });
     p.on('close', (code) => { clearTimeout(timer); if (code === 0) resolve(out); else reject(new Error(`websearch exited ${code}: ${err.slice(0, 200)}`)); });
+    // A CLI that exits before reading its input must not take the process down with EPIPE.
+    p.stdin.on('error', () => {});
     p.stdin.end(`${request}\n`);
   });
   const r = JSON.parse(stdout.trim().split('\n').pop() ?? '{}').result;
+  // Zero hits is an answer, not a failure: every engine in the chain came back empty (backend_host is
+  // blank then because no engine served results).
+  if (r?.kind === 'empty') return [];
   if (r?.kind !== 'ok') throw new Error(`websearch: ${JSON.stringify(r ?? {}).slice(0, 200)}`);
   return (r.results ?? []).map((x: any) => ({
     source: 'web', title: String(x.title ?? ''), url: x.url,
@@ -188,17 +220,34 @@ export async function harnessSearch(query: string, n = 8, bin = WEBSEARCH_BIN): 
 // Only valid sources come back (src/research/validity.ts): spam mirrors and search pages never reach the
 // analyst or the forecasters.
 async function webSearch(query: string, n: number): Promise<Evidence[]> {
-  let items: Evidence[];
-  if (!existsSync(WEBSEARCH_BIN)) items = await exaSearch(query, n);
-  else {
+  const once = async (x: string): Promise<Evidence[]> => {
+    if (!existsSync(WEBSEARCH_BIN)) return exaSearch(x, n);
     try {
-      items = await harnessSearch(query, n);
+      return await harnessSearch(x, n);
     } catch (e: any) {
       log.warn('websearch CLI failed, using Exa directly', { err: e.message });
-      items = await exaSearch(query, n);
+      return exaSearch(x, n);
     }
+  };
+  let items = await once(query);
+  // The analyst often writes queries no engine can match: a URL path in site: (or "site.host/path"),
+  // several quoted numbers. On zero hits, search once more with the operators loosened.
+  const loose = loosenQuery(query);
+  if (!items.length && loose !== query) {
+    items = await once(loose);
+    log.info('websearch empty, loosened query', { query: query.slice(0, 160), loose: loose.slice(0, 160), found: items.length });
   }
   return items.filter(validSource);
+}
+
+// site: keeps only the host ("site.espn.com/nfl/x" and "site:espn.com/nfl/x" become "site:espn.com"),
+// and quotes are dropped, so the words still count but need not match verbatim.
+export function loosenQuery(query: string): string {
+  return query
+    .replace(/(^|\s)"?site[.:]\s*(?:https?:\/\/)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)[^\s"]*"?/gi, '$1site:$2')
+    .replace(/"/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 // Research floor: every live question gets at least this many valid web sources (at most 3 per domain).

@@ -45,6 +45,12 @@ can be scored when questions resolve.
   report the same way: questions resolved, mean peer score, rank on each leaderboard Metaculus has
   published, Brier and log score against the base rate and a coin, and the best ensemble members.
   `node src/cli.ts standings [--send]` prints it on demand.
+- The outcome sync reads resolutions from the posts feed, 25 posts per request, and asks for single posts
+  only for the peer scores of resolved forecasts. Every Metaculus request waits its turn (1 s apart), a
+  429 honors Retry-After, and a sync that stays rate-limited stops and resumes at the next cycle.
+- A source that refuses is skipped for a while, and the skip survives restarts (`data/state.json`).
+  AskNews with an empty wallet (402) is off for 6 hours at a time and the owner hears about it once per
+  empty spell; GDELT's 429s back off from 10 minutes, doubling up to a day.
 
 ## Models
 

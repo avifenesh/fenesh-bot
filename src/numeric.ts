@@ -59,13 +59,37 @@ export function pchip(xs: number[], ys: number[]): (x: number) => number {
   };
 }
 
+// Discrete questions put each outcome in its own bucket of the grid. Archived questions predate the
+// `discrete` flag; their grid is the tell (continuous questions always have 201 points).
+export function isDiscrete(s: Scaling): boolean {
+  return s.discrete ?? s.cdfSize < 201;
+}
+
 // Clean declared percentiles: sort, drop duplicates, force strictly increasing in both axes.
-export function cleanPercentiles(pcts: Pct[]): Pct[] {
-  const s = pcts
+// On a discrete question, repeated values are a valid answer: several percentiles on one outcome mean
+// that outcome holds that much probability (all of them on 3 = "3, almost surely"). Dropping the repeats
+// would misstate the forecast or leave too few points, so a run of k percentiles on value v is spread
+// evenly across v's bucket instead, and the CDF climbs through the bucket by the declared amounts.
+export function cleanPercentiles(pcts: Pct[], s?: Scaling): Pct[] {
+  let sorted = pcts
     .filter((q) => Number.isFinite(q.p) && Number.isFinite(q.v) && q.p > 0 && q.p < 1)
     .sort((a, b) => a.p - b.p);
+  if (s && isDiscrete(s)) {
+    const width = (s.rangeMax - s.rangeMin) / Math.max(1, s.cdfSize - 1);
+    const spread: Pct[] = [];
+    for (let i = 0; i < sorted.length;) {
+      let j = i;
+      while (j + 1 < sorted.length && sorted[j + 1].v === sorted[i].v) j++;
+      const k = j - i + 1;
+      for (let t = 0; t < k; t++) {
+        spread.push({ p: sorted[i + t].p, v: k === 1 ? sorted[i].v : sorted[i].v - width / 2 + (width * (t + 1)) / (k + 1) });
+      }
+      i = j + 1;
+    }
+    sorted = spread;
+  }
   const out: Pct[] = [];
-  for (const q of s) {
+  for (const q of sorted) {
     const prev = out[out.length - 1];
     if (prev && (q.p <= prev.p || q.v <= prev.v)) continue;
     out.push(q);
@@ -76,7 +100,7 @@ export function cleanPercentiles(pcts: Pct[]): Pct[] {
 
 // Raw CDF on the question grid: cdf[i] = P(X <= value at location i/(n-1)).
 export function rawCdf(s: Scaling, pcts: Pct[]): number[] {
-  const clean = cleanPercentiles(pcts);
+  const clean = cleanPercentiles(pcts, s);
   const xs = clean.map((q) => toLocation(s, q.v));
   const ys = clean.map((q) => q.p);
   // Tails: decay linearly in location space at the outer segment slopes, clamped to [0, 1].
